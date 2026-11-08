@@ -1,0 +1,22 @@
+[Unit]
+Description=Company AI Image Gallery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yotin
+Group=yotin
+WorkingDirectory=/opt/ai-gallery
+EnvironmentFile=/opt/ai-gallery/.env
+ExecStart=/usr/bin/python3 /opt/ai-gallery/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ai-gallery/data
+
+[Install]
+WantedBy=multi-user.target
