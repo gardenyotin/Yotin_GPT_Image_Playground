@@ -1,6 +1,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
+import { isDeepStrictEqual } from 'node:util'
 
 const port = Number(process.env.MOCK_GARDEN_API_PORT || 8788)
 const host = process.env.MOCK_GARDEN_API_HOST || '127.0.0.1'
@@ -98,12 +99,19 @@ const server = http.createServer(async (req, res) => {
         || (form && [...form].some(([key, value]) => typeof value !== 'string' && key !== 'image'))) {
         return sendJson(res, 422, { detail: '请求参数或参考图片无效' })
       }
+      const entries = await Promise.all(images.map(async (f, index) => ({ slot: index + 1, mime: f.type, sha256: crypto.createHash('sha256').update(Buffer.from(await f.arrayBuffer())).digest('hex') })))
       const existing = [...jobs.values()].find((j) => j.requested_by_user_id === user && j.source_app === body.source_app && j.client_request_id === body.client_request_id)
-      if (existing) return sendJson(res, 200, existing)
+      if (existing) {
+        if (existing.prompt !== body.prompt || !isDeepStrictEqual(existing.params_json, params)
+          || !isDeepStrictEqual(existing.input_images_json.images.map((e) => e.sha256), entries.map((e) => e.sha256))) {
+          return sendJson(res, 409, { detail: 'client_request_id 已用于不同的提示词、参数或参考图片' })
+        }
+        return sendJson(res, 200, existing)
+      }
       const job = {
         job_id: crypto.randomUUID(), requested_by_user_id: user, source_app: body.source_app,
         client_request_id: body.client_request_id, prompt: body.prompt, params_json: params,
-        input_images_json: { images: await Promise.all(images.map(async (f, index) => ({ slot: index + 1, mime: f.type, sha256: crypto.createHash('sha256').update(Buffer.from(await f.arrayBuffer())).digest('hex') }))) },
+        input_images_json: { images: entries },
         status: 'queued', result_assets_json: [], created_at: new Date().toISOString(),
         error_code: null, error_message: null,
       }

@@ -15,7 +15,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "notices": "node scripts/build-notices.mjs",
-    "test:mock": "node --test scripts/mock-garden-api.test.mjs",
+    "test:mock": "node --test scripts/mock-garden-api.node.mjs",
     "test:gateway": "python3 -m unittest discover -s deploy -p test_garden_gateway.py"
   },
   "dependencies": {

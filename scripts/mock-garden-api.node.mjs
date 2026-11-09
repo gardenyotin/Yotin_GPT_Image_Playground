@@ -38,6 +38,9 @@ test('真实 HTTP multipart → 幂等重放 → 多图结果与归属', async (
   const replay = await fetch(`${origin}/api/image-jobs`, { method: 'POST', body: makeBody() })
   assert.equal(replay.status, 200)
   assert.equal((await replay.json()).job_id, job.job_id)
+  const conflict = makeBody()
+  conflict.set('prompt', 'different prompt')
+  assert.equal((await fetch(`${origin}/api/image-jobs`, { method: 'POST', body: conflict })).status, 409)
   let status
   for (let attempt = 0; attempt < 30; attempt++) {
     status = await (await fetch(`${origin}/api/image-jobs/${job.job_id}`)).json()

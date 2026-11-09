@@ -145,6 +145,10 @@ class Handler(SimpleHTTPRequestHandler):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, directory=str(APP_DIR), **kwargs)
 
+  def end_headers(self):
+    self.send_header('Referrer-Policy', 'no-referrer')
+    super().end_headers()
+
   def log_message(self, fmt, *args):
     sys.stdout.write('%s %s\n' % (self.log_date_time_string(), fmt % args))
     sys.stdout.flush()
@@ -180,7 +184,7 @@ class Handler(SimpleHTTPRequestHandler):
       if parsed.path == '/api/gallery':
         return self.handle_gallery(parsed.query)
       if parsed.path == '/api/image-fetch':
-        return self.handle_image_fetch(parsed.query)
+        return self.send_json(410, {'detail': '远程图片抓取接口已停用，请使用 Garden 任务结果接口'})
       if parsed.path.startswith('/api-proxy/'):
         return self.handle_proxy()
       if parsed.path.startswith('/media/'):
@@ -352,26 +356,6 @@ class Handler(SimpleHTTPRequestHandler):
     self.end_headers()
     with path.open('rb') as source:
       shutil.copyfileobj(source, self.wfile)
-
-  def handle_image_fetch(self, query):
-    url = urllib.parse.parse_qs(query).get('url', [''])[0]
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != 'https' or not parsed.hostname:
-      return self.send_json(400, {'error': 'invalid image URL'})
-    try:
-      request = urllib.request.Request(url, headers={'User-Agent': 'Playground/1.0'})
-      with urllib.request.urlopen(request, timeout=120) as response:
-        body = response.read(MAX_BODY + 1)
-        if len(body) > MAX_BODY:
-          return self.send_json(413, {'error': 'image too large'})
-        self.send_response(200)
-        self.send_header('Content-Type', response.headers.get_content_type())
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-        self.wfile.write(body)
-    except urllib.error.URLError as err:
-      self.send_json(502, {'error': f'image fetch failed: {err.reason}'})
 
   def handle_garden(self):
     if not GARDEN_API_URL:

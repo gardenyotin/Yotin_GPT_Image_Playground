@@ -97,7 +97,8 @@ vi.mock('./lib/api', () => ({
     revisedPrompts: [],
   })),
 }))
-vi.mock('./lib/gardenImageApi', () => ({
+vi.mock('./lib/gardenImageApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./lib/gardenImageApi')>(),
   cancelJob: vi.fn(async () => ({ cancelled: true })),
   getJobStatus: vi.fn(async (id: string) => ({ job_id: id, status: 'succeeded' })),
   getJobResult: vi.fn(async () => ({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })),

@@ -1,4 +1,5 @@
 """仅用本地假 Garden 检查部署网关；不请求真实供应商。"""
+from contextlib import closing
 import http.client
 import http.server
 import json
@@ -50,7 +51,7 @@ class GardenGatewayTests(unittest.TestCase):
     self.config.stop()
 
   def request(self, path, body=None, headers=None):
-    with http.client.HTTPConnection('127.0.0.1', self.gateway.server_port, timeout=3) as conn:
+    with closing(http.client.HTTPConnection('127.0.0.1', self.gateway.server_port, timeout=3)) as conn:
       conn.request('POST' if body is not None else 'GET', path, body, headers or {})
       response = conn.getresponse()
       return response.status, dict(response.getheaders()), response.read()
@@ -79,6 +80,12 @@ class GardenGatewayTests(unittest.TestCase):
     for tool in ({'type': 'image_generation'}, {'type': 'image_generation', 'model': 'anything'}):
       body = json.dumps({'model': 'text', 'tools': [tool]}).encode()
       self.assertEqual(self.request('/api-proxy/responses', body)[0], 422)
+    self.assertEqual(self.received, [])
+
+  def test_remote_image_fetch_is_retired_without_outbound_requests(self):
+    status, headers, _body = self.request('/api/image-fetch?url=https://127.0.0.1/secret')
+    self.assertEqual(status, 410)
+    self.assertEqual(headers['Referrer-Policy'], 'no-referrer')
     self.assertEqual(self.received, [])
 
   def test_unconfigured_garden_fails_without_fallback(self):
