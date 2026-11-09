@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import type { AppMode } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
+import { isTauri } from '../lib/platform'
+import { LinkIcon } from './icons'
 
 interface HelpModalProps {
   appMode: AppMode
@@ -68,7 +70,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
                 <div className="space-y-4">
                   <ul className="list-disc pl-4 space-y-2">
                     <li>需要使用 Responses API 配置。</li>
-                    <li>如需 Agent 搜索互联网或读取 URL 内容，可在设置的 Agent 配置中开启“网络搜索”。</li>
+                    <li>如需 Agent 搜索互联网或读取 URL 内容，可在<strong className="font-semibold">「设置 → Agent 配置」</strong>中开启“网络搜索”。</li>
                     <li>输入 <strong className="text-blue-500 dark:text-blue-400 font-medium">@</strong> 可引用参考图或前面轮次生成的图片；Agent 也会自行参考上下文中的图片。</li>
                     <li>编辑某轮消息重新发送，或重新生成某轮消息，会产生可切换的分支。</li>
                     <li>生成的图片会同步到画廊；删除对话默认不会删除画廊中的任务。</li>
@@ -166,6 +168,22 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
               </section>
             </>
           )}
+          <section>
+            <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+              <LinkIcon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+              导入配置链接
+            </h4>
+            <ul className="list-disc pl-4 space-y-2">
+              {isTauri ? (
+                <>
+                  <li>在浏览器或其他地方<strong className="text-blue-500 dark:text-blue-400 font-medium">复制导入链接</strong>后切回客户端，客户端会提示导入，确认后才会导入。</li>
+                  <li>点击 <code className="rounded bg-gray-100 px-1 py-0.5 text-[0.85em] text-gray-700 dark:bg-white/[0.06] dark:text-gray-200">gpt-image-playground://</code> 开头的链接可以直接唤起客户端并提示导入。</li>
+                </>
+              ) : (
+                <li>打开带有配置参数的<strong className="text-blue-500 dark:text-blue-400 font-medium">导入链接</strong>时，页面会先提示导入，确认后才会导入。</li>
+              )}
+            </ul>
+          </section>
         </div>
 
         <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">

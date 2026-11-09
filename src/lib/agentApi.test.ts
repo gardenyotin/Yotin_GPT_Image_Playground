@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCallArguments } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments } from './agentApi'
 
 describe('parseBatchImageCallArguments', () => {
   it('trims ids and prompts, fills missing ids, and skips empty prompts', () => {
@@ -35,9 +35,60 @@ describe('parseBatchImageCallArguments', () => {
   })
 })
 
+describe('callBatchImageSingle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('reports the image tool error without a misleading streaming hint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: "Tool choice 'required' must be specified with 'tools' parameter." },
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+
+    const result = await callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', streamImages: true }),
+      params: DEFAULT_PARAMS,
+      batchItemId: 'image_1',
+      prompt: 'prompt',
+      referenceImageDataUrls: [],
+    })
+
+    expect(result).toMatchObject({
+      batchItemId: 'image_1',
+      image: null,
+      error: "Tool choice 'required' must be specified with 'tools' parameter.\n提示：当前使用的 API 可能未正确转发图像生成工具，请尝试更换支持该工具的接口或模型。",
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('收到响应头后流式停顿时仍按超时中止，并给出中文原因', async () => {
+    // 与浏览器一致：信号中止后，读取中的响应体以 signal.reason 报错
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const signal = (init as RequestInit).signal!
+      const body = new ReadableStream<Uint8Array>({
+        start: (ctrl) => {
+          ctrl.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"Hel"}\n\n'))
+          signal.addEventListener('abort', () => ctrl.error(signal.reason))
+        },
+      })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    })
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', streamImages: true, timeout: 0.05 })
+
+    const err = await callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: 'prompt',
+    }).catch((e) => e)
+
+    expect(err).toMatchObject({ name: 'AbortError', message: '请求超时：超过 0.05 秒仍未完成，请稍后重试或提高超时时间。' })
   })
 
   it('streams Agent text and requests configured partial images', async () => {
@@ -62,6 +113,7 @@ describe('callAgentResponsesApi', () => {
       streamImages: true,
       streamPartialImages: 2,
       reasoningEffort: 'xhigh',
+      imageGenerationModel: 'gpt-image-2.5-flare',
     })
 
     const result = await callAgentResponsesApi({
@@ -76,6 +128,7 @@ describe('callAgentResponsesApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.reasoning).toEqual({ effort: 'xhigh' })
+    expect(body.tools[0].model).toBe('gpt-image-2.5-flare')
     expect(body.tools[0].partial_images).toBe(2)
     expect(textDeltas).toEqual(['Hel', 'lo'])
     expect(result).toMatchObject({

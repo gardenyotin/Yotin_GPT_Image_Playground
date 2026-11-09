@@ -15,11 +15,13 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 ] as const
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
-export type BuiltInApiProvider = 'openai' | 'fal'
+export type BuiltInApiProvider = 'openai' | 'google' | 'xai' | 'sb2api-async' | 'fal' | 'garden'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
 export const DEFAULT_AGENT_MAX_TOOL_ROUNDS = 15
+/** 接口允许的参考图数量上限 */
+export const MAX_INPUT_IMAGES = 16
 
 export type CustomProviderRequestMethod = 'GET' | 'POST'
 export type CustomProviderContentType = 'json' | 'multipart'
@@ -66,15 +68,30 @@ export interface CustomProviderDefinition {
   submit: CustomProviderSubmitMapping
   editSubmit?: CustomProviderSubmitMapping
   poll?: CustomProviderPollMapping
+  /** 按顺序匹配模型 ID，支持 * 通配符；匹配后使用整套接口映射 */
+  modelOverrides?: Array<{
+    models: string[]
+    submit: CustomProviderSubmitMapping
+    editSubmit?: CustomProviderSubmitMapping
+    poll?: CustomProviderPollMapping
+  }>
 }
 
 export interface ApiProfile {
   id: string
+  /** 当前部署指定的默认预置配置。 */
+  isDefault?: boolean
   name: string
+  /** 预置配置的 Markdown 说明。 */
+  description?: string
   provider: ApiProvider
   baseUrl: string
   apiKey: string
+  /** 模型 ID 列表，多个模型以 `, ` 分隔 */
   model: string
+  /** 首页选中的模型；不在列表中时回退到第一个 */
+  selectedModel?: string
+  imageGenerationModel?: string
   timeout: number
   apiMode: ApiMode
   reasoningEffort?: ReasoningEffort
@@ -83,8 +100,52 @@ export interface ApiProfile {
   responseFormatB64Json?: boolean
   streamImages?: boolean
   streamPartialImages?: number
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages'>>>>
+  transparentBackgroundMethod: 'api' | 'local'
+  /** 生成 SVG 时负责编写 SVG 的文本模型，留空使用默认值 */
+  svgModel?: string
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'imageGenerationModel' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
 }
+
+export interface PresetAgentConfig {
+  apiConfigMode?: AgentApiConfigMode
+  textProfileId?: string
+  imageProfileId?: string
+}
+
+export interface PresetConfig {
+  customProviders: CustomProviderDefinition[]
+  profiles: ApiProfile[]
+  agent?: PresetAgentConfig
+}
+
+/** 参考图预览中“编辑图片”按钮的默认行为 */
+export type ReferenceImageEditAction = 'ask' | 'sketch' | 'mask'
+
+/** 仅客户端：下载和导出时每次询问保存位置，还是直接保存到默认保存地址 */
+export type SaveLocationMode = 'ask' | 'default'
+
+/** 重试任务时新建任务，还是覆盖原任务 */
+export type RetryMode = 'new' | 'overwriteFailed' | 'overwriteAll'
+
+/** 字体选择：default 表示使用部署默认（VITE_DEFAULT_UI_FONT / VITE_DEFAULT_MONO_FONT）；builtin 为内置字体，加载来源由 VITE_BUILTIN_FONT_SOURCE 决定 */
+export type FontMode = 'default' | 'builtin' | 'system' | 'custom'
+export type ColorMode = 'system' | 'light' | 'dark'
+
+/** 打开画板的请求：baseImageSrc 为空时是空白画板，replaceImageId 表示完成后替换该参考图 */
+export interface SketchBoardRequest {
+  baseImageSrc: string | null
+  replaceImageId?: string
+}
+
+/** 正在进行的批量提交进度 */
+export interface BatchProgress {
+  total: number
+  started: number
+  finished: number
+}
+
+/** 批量提交模式：排队逐条执行，或按并发数同时执行 */
+export type BatchPromptMode = 'queue' | 'concurrent'
 
 export interface AppSettings {
   /** 旧版单配置字段：保留用于导入/查询参数兼容，实际请求以 active profile 为准 */
@@ -103,10 +164,38 @@ export interface AppSettings {
   persistInputOnRestart: boolean
   reuseTaskApiProfileTemporarily: boolean
   alwaysShowRetryButton: boolean
+  /** 在收藏夹页新建的任务自动加入当前收藏夹 */
+  saveTasksToActiveFavoriteCollection: boolean
+  retryMode: RetryMode
   allowPromptRewrite: boolean
+  imagePromptHints: boolean
   taskCompletionNotification: boolean
+  /** 启动时检查 GitHub 上的新版本 */
+  autoCheckUpdate: boolean
+  /** 仅客户端：把警告和错误写入日志文件 */
+  writeLogFile: boolean
   enterSubmit: boolean
+  /** 切换隐私模式的快捷键，如 Ctrl+Shift+H；空字符串表示禁用 */
+  privacyModeShortcut: string
+  colorMode: ColorMode
+  uiFont: FontMode
+  /** uiFont 为 custom 时使用的本机字体名称 */
+  uiFontName: string
+  monoFont: FontMode
+  /** monoFont 为 custom 时使用的本机字体名称 */
+  monoFontName: string
+  /** 偏好设置：是否在首页提供多提示词批量提交 */
+  showBatchPrompt: boolean
+  /** 多提示词批量提交，提示词之间空两行分隔 */
+  batchPromptEnabled: boolean
+  batchPromptMode: BatchPromptMode
+  /** 并发模式下是否限制并发数（默认开启），关闭时全部同时提交 */
+  batchPromptConcurrencyLimited: boolean
+  batchPromptConcurrency: number
+  referenceImageEditAction: ReferenceImageEditAction
   zipDownloadRoutes: ZipDownloadRoute[]
+  /** 仅客户端：默认保存地址本身由 Rust 侧保存，不在设置中 */
+  saveLocationMode: SaveLocationMode
   agentScrollToBottomAfterSubmit: boolean
   agentMaxToolRounds: number
   agentWebSearch: boolean
@@ -120,24 +209,52 @@ export interface AppSettings {
 
 // ===== 任务参数 =====
 
+export const OUTPUT_FORMATS = ['png', 'jpeg', 'webp', 'svg', 'gif'] as const
+export const IMAGE_COMPLEXITIES = ['auto', 'low', 'medium', 'high'] as const
+export const GIF_FRAME_COUNT_RANGE = { min: 2, max: 16 }
+export const GIF_FRAME_DURATION_RANGE = { min: 20, max: 2000 }
+
+/** 参数面板中不可选的项及原因，undefined 表示可选 */
+export interface ParamDisabledReasons {
+  complexity?: string
+  gif?: string
+  svg?: string
+  autoQuality?: string
+  extendedQuality?: string
+  autoSize?: string
+}
+
 export interface TaskParams {
   size: string
-  quality: 'auto' | 'low' | 'medium' | 'high'
-  output_format: 'png' | 'jpeg' | 'webp'
+  aspect_ratio?: string
+  resolution?: string
+  google_search?: boolean
+  image_search?: boolean
+  thinking_level?: 'auto' | 'minimal' | 'low' | 'medium' | 'high'
+  quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** auto 表示不发送，由模型使用默认值 */
+  complexity: typeof IMAGE_COMPLEXITIES[number]
+  output_format: typeof OUTPUT_FORMATS[number]
   output_compression: number | null
   moderation: 'auto' | 'low'
   n: number
   transparent_output: boolean
+  /** 仅 GIF 输出 */
+  frame_count: number
+  frame_duration_ms: number
 }
 
 export const DEFAULT_PARAMS: TaskParams = {
   size: 'auto',
   quality: 'auto',
+  complexity: 'auto',
   output_format: 'png',
   output_compression: null,
   moderation: 'auto',
   n: 1,
   transparent_output: false,
+  frame_count: 9,
+  frame_duration_ms: 200,
 }
 
 // ===== 输入图片（UI 层面） =====
@@ -147,6 +264,15 @@ export interface InputImage {
   id: string
   /** data URL，用于预览 */
   dataUrl: string
+  /** 草图板画在这张图上的透明标注层（image store id），尺寸与原图一致 */
+  markupImageId?: string
+}
+
+/** 参考图上的评论标注，x / y 为相对原图宽高的比例（0~1） */
+export interface ImageComment {
+  x: number
+  y: number
+  text: string
 }
 
 export interface MaskDraft {
@@ -167,10 +293,20 @@ export interface AgentInputDraft {
 
 export type TaskStatus = 'running' | 'done' | 'error'
 
+export interface ImageSearchGrounding {
+  renderedContent?: string
+  sources: Array<{ uri: string; title: string; imageUri?: string; domain?: string }>
+}
+
 export interface TaskRecord {
+  searchGrounding?: ImageSearchGrounding[]
+  /** 请求中附加的图像生成和搜索提示词 */
+  promptHints?: { prefix: string; suffix: string }
   id: string
   prompt: string
   params: TaskParams
+  /** 请求配置支持的可选参数，用于展示默认值 */
+  paramSupport?: { thinking: boolean; complexity: boolean }
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider
   /** 生成时使用的 API 配置 ID */
@@ -207,6 +343,8 @@ export interface TaskRecord {
   inputImageIds: string[]
   maskTargetImageId?: string | null
   maskImageId?: string | null
+  /** 随第一张参考图发送的 markup 标注层 image store id */
+  markupImageId?: string | null
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
@@ -220,6 +358,8 @@ export interface TaskRecord {
   status: TaskStatus
   error: string | null
   createdAt: number
+  /** 本次生成开始时间，重试时不改变原始创建时间 */
+  startedAt?: number
   finishedAt: number | null
   /** 总耗时毫秒 */
   elapsed: number | null
@@ -448,7 +588,7 @@ export interface ExportData {
     index: number
     total: number
   }
-  settings?: AppSettings
+  settings?: Omit<AppSettings, 'customProviders'> & { customProviders?: CustomProviderDefinition[] }
   tasks?: TaskRecord[]
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null
@@ -460,6 +600,8 @@ export interface ExportData {
     source?: 'upload' | 'generated' | 'mask'
     width?: number
     height?: number
+    /** 通过链接添加时的原链接 */
+    sourceUrl?: string
   }>
   /** imageId → 缩略图信息 */
   thumbnailFiles?: Record<string, {
@@ -468,4 +610,18 @@ export interface ExportData {
     height?: number
     thumbnailVersion?: number
   }>
+}
+
+// ===== Skill（仅客户端） =====
+
+/** 对应 Rust `src-tauri/src/cli/skill.rs` 的 `SkillTarget`：`~/.claude/skills` 或 `~/.agents/skills` */
+export type SkillTarget = 'claude' | 'agents'
+/** 对应 Rust `State`：找不到用户文件夹、未安装、已安装、已安装但与当前版本不同、同名文件夹不是本应用的 Skill */
+export type SkillState = 'notFound' | 'absent' | 'added' | 'outdated' | 'invalid'
+
+export interface SkillInfo {
+  /** 随安装包附带的 Skill 文件夹 */
+  skillDir: string
+  /** `path` 为安装后的 Skill 文件夹 */
+  skills: { id: SkillTarget; path: string; state: SkillState }[]
 }

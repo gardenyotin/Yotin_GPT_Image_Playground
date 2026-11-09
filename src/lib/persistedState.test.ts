@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentConversation, AppSettings, FavoriteCollection } from '../types'
 import { DEFAULT_PARAMS } from '../types'
-import { DEFAULT_SETTINGS } from './apiProfiles'
+import { DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS, switchApiProfileProvider } from './apiProfiles'
 import { DEFAULT_FAVORITE_COLLECTION_ID } from './favoriteState'
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './persistedState'
 
@@ -43,6 +43,7 @@ function source(settings: AppSettings = DEFAULT_SETTINGS) {
     supportPromptDismissed: false,
     supportPromptOpen: false,
     supportPromptSkippedForImportedData: false,
+    imageSourceUrls: {},
   }
 }
 
@@ -58,6 +59,49 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it.each([undefined, 'custom-image-model', '', '   '])('restores profile and legacy top-level tool model %s without autofilling', (imageGenerationModel) => {
+    const profile = { apiMode: 'responses', model: 'legacy-text-model', ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }) }
+    for (const settings of [profile, { profiles: [profile] }]) {
+      const result = normalizePersistedState({ settings }, fallback(), 100)!
+      expect(result.state.settings.profiles[0]).toMatchObject({
+        model: 'legacy-text-model',
+        imageGenerationModel: imageGenerationModel?.trim() ?? '',
+      })
+    }
+  })
+
+  it.each([undefined, 'draft-image-model', ''])('restores saved provider tool model %s instead of inheriting the active model', (imageGenerationModel) => {
+    const result = normalizePersistedState({ settings: { profiles: [{
+      provider: 'fal',
+      imageGenerationModel: DEFAULT_IMAGES_MODEL,
+      providerDrafts: { openai: { apiMode: 'responses', model: 'saved-text-model', ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }) } },
+    }] } }, fallback(), 100)!
+    expect(switchApiProfileProvider(result.state.settings.profiles[0], 'openai')).toMatchObject({
+      apiMode: 'responses',
+      model: 'saved-text-model',
+      imageGenerationModel: imageGenerationModel ?? '',
+    })
+  })
+
+  it('retains new defaults when no settings were persisted', () => {
+    expect(normalizePersistedState({}, fallback(), 100)!.state.settings.profiles[0].imageGenerationModel).toBe(DEFAULT_IMAGES_MODEL)
+  })
+
+  it.each(['xhigh', 'max'] as const)('restores the %s GPT Image 2.5 quality level', (quality) => {
+    const result = normalizePersistedState({ params: { ...DEFAULT_PARAMS, quality } }, fallback(), 100)!
+
+    expect(result.state.params.quality).toBe(quality)
+  })
+
+  it('keeps only http(s) reference image source URLs', () => {
+    const result = normalizePersistedState({
+      imageSourceUrls: { a: 'https://example.com/a.png', b: 'data:image/png;base64,AA', c: 1 },
+    }, fallback(), 100)!
+
+    expect(result.state.imageSourceUrls).toEqual({ a: 'https://example.com/a.png' })
+    expect(normalizePersistedState({ imageSourceUrls: [] }, fallback(), 100)!.state.imageSourceUrls).toEqual({})
+  })
+
   it('rejects non-record unknown data and falls back field-by-field for an invalid record', () => {
     class ExternalState {}
 
@@ -139,8 +183,13 @@ describe('persisted state codec', () => {
   })
 
   it('persists gallery and Agent drafts only when input persistence is enabled', () => {
+    const previousPresetConfig = {
+      customProviders: [],
+      profiles: [DEFAULT_SETTINGS.profiles[0]],
+    }
     const enabled = createPersistedState({
       ...source(),
+      previousPresetConfig,
       agentInputDrafts: {
         'conversation-a': {
           prompt: 'Agent 草稿',
@@ -187,11 +236,26 @@ describe('persisted state codec', () => {
     expect(enabled.inputImages).toEqual([{ id: imageA.id, dataUrl: '' }])
     expect(enabled.galleryInputDraft?.inputImages).toEqual([{ id: imageA.id, dataUrl: '' }])
     expect(enabled.agentInputDrafts['conversation-a'].inputImages).toEqual([{ id: imageA.id, dataUrl: '' }])
+    expect(enabled.previousPresetConfig).toEqual(previousPresetConfig)
     expect(disabled).not.toHaveProperty('prompt')
     expect(disabled).not.toHaveProperty('inputImages')
     expect(disabled.galleryInputDraft).toBeNull()
     expect(disabled.agentInputDrafts).toEqual({})
     expect(JSON.stringify(withLegacyConversation.agentConversations)).not.toContain('legacy-conversation-base64')
+  })
+
+  it('preserves an empty deployed profile snapshot when restoring persisted state', () => {
+    const result = normalizePersistedState({
+      previousPresetConfig: {
+        customProviders: [{ id: 'provider-a', name: 'Provider A', submit: { path: 'generate' } }],
+        profiles: [],
+      },
+    }, fallback())!
+
+    expect(result.state.previousPresetConfig?.profiles).toEqual([])
+    expect(result.state.previousPresetConfig?.customProviders).toEqual([
+      expect.objectContaining({ id: 'provider-a' }),
+    ])
   })
 
   it('does not restore Agent drafts or legacy top-level input when input persistence is disabled', () => {

@@ -1,4 +1,4 @@
-import type { ApiMode, ReasoningEffort } from '../types'
+import type { ApiMode, ApiProfile, ReasoningEffort } from '../types'
 import { DEFAULT_STREAM_PARTIAL_IMAGES, REASONING_EFFORT_VALUES } from '../types'
 
 import { normalizeBaseUrl } from './devProxy'
@@ -21,11 +21,13 @@ export interface DefaultApiUrlPatch {
   apiKey?: string
   apiMode?: ApiMode
   model?: string
+  imageGenerationModel?: string
   reasoningEffort?: ReasoningEffort
   name?: string
   codexCli?: boolean
   streamImages?: boolean
   streamPartialImages?: number
+  transparentBackgroundMethod?: ApiProfile['transparentBackgroundMethod']
 }
 
 export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
@@ -34,29 +36,37 @@ export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
 
   try {
     const parsed = new URL(url)
+    const queryIndex = url.search(/[?#]/)
+    const baseUrl = queryIndex >= 0 ? url.slice(0, queryIndex) : url
     const patch: DefaultApiUrlPatch = {
-      baseUrl: normalizeBaseUrl(parsed.origin + parsed.pathname),
+      baseUrl: normalizeBaseUrl(baseUrl),
     }
 
     const apiUrlParam = parsed.searchParams.get('apiUrl')
     const apiKeyParam = parsed.searchParams.get('apiKey')
     const apiModeParam = parsed.searchParams.get('apiMode')
     const modelParam = parsed.searchParams.get('model')
+    const imageGenerationModelParam = parsed.searchParams.get('imageGenerationModel')
     const reasoningEffortParam = parsed.searchParams.get('reasoningEffort')
     const profileNameParam = parsed.searchParams.get('profileName')
     const codexCliParam = parsed.searchParams.get('codexCli')
     const streamImagesParam = parsed.searchParams.get('streamImages')
     const streamPartialImagesParam = parsed.searchParams.get('streamPartialImages')
+    const transparentBackgroundMethodParam = parsed.searchParams.get('transparentBackgroundMethod')
 
     if (apiUrlParam !== null) patch.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
     if (apiKeyParam !== null) patch.apiKey = apiKeyParam.trim()
     if (apiModeParam === 'images' || apiModeParam === 'responses') patch.apiMode = apiModeParam
     if (modelParam !== null && modelParam.trim()) patch.model = modelParam.trim()
+    if (imageGenerationModelParam !== null) patch.imageGenerationModel = imageGenerationModelParam.trim()
     if (reasoningEffortParam !== null) patch.reasoningEffort = normalizeReasoningEffort(reasoningEffortParam)
     if (profileNameParam?.trim()) patch.name = profileNameParam.trim()
     if (codexCliParam !== null) patch.codexCli = codexCliParam.trim().toLowerCase() === 'true'
     if (streamImagesParam !== null) patch.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
+    if (transparentBackgroundMethodParam === 'api' || transparentBackgroundMethodParam === 'local') {
+      patch.transparentBackgroundMethod = transparentBackgroundMethodParam
+    }
 
     return patch
   } catch {

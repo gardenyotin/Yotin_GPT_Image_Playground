@@ -15,11 +15,11 @@ const KEY_COLOR_RGB = {
 } as const
 
 const TRANSPARENT_PROMPT_TEMPLATE = [
-  '[背景指令]',
-  '背景色选择规则：如果主体包含绿色系（绿、青绿、黄绿、草绿等）颜色，使用纯洋红色(#FF00FF)背景；否则一律使用纯绿色(#00FF00)背景。',
-  '背景要求：整张画布仅由所选纯色填充，无任何渐变、纹理、阴影、光照变化、地面或环境元素。',
-  '主体要求：单主体、完整呈现、轮廓清晰锐利。主体与背景之间保持干净的边缘分离，不要有颜色溢出或混合。',
-  '禁止：主体本身、描边、光晕、投影或反射中不能出现所选背景色。',
+  '[Background instructions]',
+  'Background color rule: if the subject contains any green tones (green, teal, yellow-green, grass green, etc.), use a solid magenta (#FF00FF) background; otherwise always use a solid green (#00FF00) background.',
+  'Background requirements: fill the entire canvas with the chosen solid color only, with no gradients, textures, shadows, lighting changes, ground, or environmental elements.',
+  'Subject requirements: a single subject, fully visible, with clean and sharp outlines. Keep a clean edge separation between the subject and the background, with no color bleeding or blending.',
+  'Forbidden: the chosen background color must not appear in the subject itself, its outlines, glows, shadows, or reflections.',
 ].join('\n')
 
 export function buildTransparentPrompt(prompt: string) {
@@ -29,8 +29,8 @@ export function buildTransparentPrompt(prompt: string) {
 export function getTransparentRequestParams(params: TaskParams): TaskParams {
   return {
     ...params,
-    output_format: 'png',
-    output_compression: null,
+    output_format: params.output_format === 'jpeg' ? 'png' : params.output_format,
+    output_compression: params.output_format === 'webp' ? params.output_compression : null,
     transparent_output: true,
   }
 }
@@ -42,7 +42,12 @@ export function createTransparentOutputMeta(prompt: string): TransparentOutputMe
   }
 }
 
-export async function removeKeyedBackgroundFromDataUrl(dataUrl: string, keyColor?: string): Promise<string> {
+export async function removeKeyedBackgroundFromDataUrl(
+  dataUrl: string,
+  keyColor?: string,
+  outputFormat: 'png' | 'webp' = 'png',
+  outputCompression?: number | null,
+): Promise<string> {
   const image = await loadImage(dataUrl)
   const canvas = document.createElement('canvas')
   canvas.width = image.naturalWidth
@@ -55,7 +60,10 @@ export async function removeKeyedBackgroundFromDataUrl(dataUrl: string, keyColor
   const effectiveKeyColor = keyColor || detectKeyColorFromPixels(pixels.data, canvas.width, canvas.height)
   removeKeyedBackgroundFromPixels(pixels.data, canvas.width, canvas.height, effectiveKeyColor)
   ctx.putImageData(pixels, 0, 0)
-  return canvas.toDataURL('image/png')
+  const quality = outputFormat === 'webp' && outputCompression != null
+    ? Math.max(0, Math.min(1, 1 - outputCompression / 100))
+    : undefined
+  return canvas.toDataURL(`image/${outputFormat}`, quality)
 }
 
 export function detectKeyColorFromPixels(data: Uint8ClampedArray, width: number, height: number): string {

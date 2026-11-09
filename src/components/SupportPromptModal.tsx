@@ -12,9 +12,12 @@ export default function SupportPromptModal() {
   const lightboxImageId = useStore((s) => s.lightboxImageId)
   const showSettings = useStore((s) => s.showSettings)
   const maskEditorImageId = useStore((s) => s.maskEditorImageId)
+  const sketchBoard = useStore((s) => s.sketchBoard)
+  // 隐私模式中暂不显示，退出后再出现
+  const privacyMode = useStore((s) => Boolean(s.privacyMode))
 
   const blockedByHigherPriorityModal = Boolean(
-    confirmDialog || detailTaskId || lightboxImageId || showSettings || maskEditorImageId,
+    privacyMode || confirmDialog || detailTaskId || lightboxImageId || showSettings || maskEditorImageId || sketchBoard,
   )
   const visible = supportPromptOpen && !blockedByHigherPriorityModal
 
