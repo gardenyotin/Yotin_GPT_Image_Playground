@@ -69,7 +69,7 @@ export default defineConfig(async ({ command, mode }) => {
                 target: devProxyConfig.target,
                 changeOrigin: devProxyConfig.changeOrigin,
                 secure: devProxyConfig.secure,
-                rewrite: (path) =>
+                rewrite: (path) => devProxyConfig.prefix === '/api' ? path :
                   path.replace(
                     new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
                     '',

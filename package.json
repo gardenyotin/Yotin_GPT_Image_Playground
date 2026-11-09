@@ -14,10 +14,11 @@
     "test:watch": "vitest",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "notices": "node scripts/build-notices.mjs"
+    "notices": "node scripts/build-notices.mjs",
+    "test:mock": "node --test scripts/mock-garden-api.test.mjs",
+    "test:gateway": "python3 -m unittest discover -s deploy -p test_garden_gateway.py"
   },
   "dependencies": {
-    "@fal-ai/client": "^1.10.0",
     "@streamdown/math": "^1.0.2",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.4.1",
@@ -58,5 +59,8 @@
     "sharp@0.34.5": true,
     "workerd@1.20260529.1": true,
     "core-js@3.49.0": false
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

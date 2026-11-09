@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { deleteFavoriteCollection, useStore, submitTask, submitAgentMessage, stopAgentResponse, stopBatchPrompts, addImageFromFile, removeMultipleTasks, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
 import { getActiveAgentRounds } from '../lib/agentConversationState'
-import { createSettingsForApiProfile, getCustomProviderDefinition, getActiveApiProfile, getAgentImageApiProfile, isServerManagedEnabled, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
+import { createDefaultGardenProfile, createSettingsForApiProfile, getCustomProviderDefinition, getActiveApiProfile, getAgentImageApiProfile, isServerManagedEnabled, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
 import { getImageModelFamily, isVectorOrAnimatedFormat } from '../lib/imageModels'
 import { getImageSearchSupport, getImageThinkingSupport } from '../lib/imageSearch'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
@@ -438,17 +438,8 @@ export default function InputBar() {
   const isMobile = useIsMobile()
 
   const settingsActiveProfile = useMemo(() => getActiveApiProfile(settings), [settings])
-  const currentActiveProfile = useMemo(() => (
-    appMode === 'agent'
-      ? getAgentImageApiProfile(settings) ?? settingsActiveProfile
-      : settingsActiveProfile
-  ), [appMode, settings, settingsActiveProfile])
-  const activeProfile = useMemo(() => {
-    const reusedProfile = appMode !== 'agent' && settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
-      ? settings.profiles.find((profile) => profile.id === reusedTaskApiProfileId)
-      : undefined
-    return reusedProfile ? resolveApiProfileModel(reusedProfile, reusedTaskApiModel ?? undefined, getCustomProviderDefinition(settings, reusedProfile.provider)) : currentActiveProfile
-  }, [appMode, currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, settings])
+  const currentActiveProfile = useMemo(() => createDefaultGardenProfile({ timeout: settingsActiveProfile.timeout }), [settingsActiveProfile.timeout])
+  const activeProfile = currentActiveProfile
   const isTemporarilyReusedProfile = activeProfile.id !== currentActiveProfile.id
   const modelOptions = useMemo(() => (
     splitModelList(settings.profiles.find((profile) => profile.id === activeProfile.id)?.model ?? activeProfile.model)

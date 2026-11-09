@@ -25,7 +25,7 @@ import { DEFAULT_SETTINGS } from './apiProfiles'
 import { getExportImageSizes, readExportImages } from './exportImages'
 import { buildExportZip, getExportFileEstimatedBytes, readExportZip } from './exportZip'
 import { getDataUrlDecodedByteSize } from './imageApiShared'
-import { toImageRecord, toThumbnailRecord } from './imageBlob'
+import { dataUrlToLosslessBlob, toImageRecord, toThumbnailRecord } from './imageBlob'
 
 // 按 dataUrl 解码后的字节数估算，作为只取文件大小估算的对照
 const estimateFromDataUrl = (image: StoredImage, thumbnail?: StoredImageThumbnail) => getExportFileEstimatedBytes(
@@ -62,8 +62,8 @@ const thumbnails: StoredImageThumbnail[] = [
 ]
 // 模拟 IndexedDB：legacy 保持旧版字符串格式，其余按新版写入；raw 的缩略图是旧版本，导出时重新生成
 function storeLikeIndexedDb() {
-  const imageRecords = new Map(images.map((image) => [image.id, image.id === 'legacy' ? image : toImageRecord(image)]))
-  const thumbnailRecords = new Map(thumbnails.map((thumbnail) => [thumbnail.id, thumbnail.id === 'legacy' ? thumbnail : toThumbnailRecord(thumbnail)]))
+  const imageRecords = new Map(images.map((image) => [image.id, image.id === 'legacy' ? image : dataUrlToLosslessBlob(image.dataUrl) ? { ...image, dataUrl: undefined, blob: dataUrlToLosslessBlob(image.dataUrl) } : image]))
+  const thumbnailRecords = new Map(thumbnails.map((thumbnail) => [thumbnail.id, thumbnail.id === 'legacy' ? thumbnail : { ...thumbnail, thumbnailDataUrl: undefined, blob: dataUrlToLosslessBlob(thumbnail.thumbnailDataUrl!) }]))
   thumbnailRecords.set('raw', toThumbnailRecord({ id: 'raw', thumbnailDataUrl: 'data:image/webp;base64,AAAA', thumbnailVersion: 1 }))
   mocks.getStoredImageRecord.mockImplementation(async (id: string) => imageRecords.get(id))
   mocks.getStoredThumbnailRecord.mockImplementation(async (id: string) => thumbnailRecords.get(id))

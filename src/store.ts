@@ -23,7 +23,7 @@ import type {
   StoredImageThumbnail,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, GARDEN_DEFAULT_SETTINGS, createSettingsForApiProfile, getActiveApiProfile, isServerManagedEnabled, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
+import { createDefaultGardenProfile, DEFAULT_SETTINGS, GARDEN_DEFAULT_SETTINGS, createSettingsForApiProfile, getActiveApiProfile, isServerManagedEnabled, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
 import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { getTaskPromptText, remapImageMentionsForOrder, replaceImageMentionsForApi, stripImageMentionMarkers } from './lib/promptImageMentions'
@@ -48,14 +48,13 @@ import {
   storeImageWithSize,
 } from './lib/db'
 import { callImageApi } from './lib/api'
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInputBuilder'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT, isHttpUrl } from './lib/imageApiShared'
-import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
-import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
-import { OPENAI_IMAGE_TASK_PROVIDER, resolveCustomProviderModel } from './lib/imageProviderMappings'
+import { cancelJob, getJobStatus, getJobResult, GardenApiError } from './lib/gardenImageApi'
+import { resolveCustomProviderModel } from './lib/imageProviderMappings'
 import { toApiInputImageDataUrl, validateMaskMatchesImage } from './lib/canvasImage'
 import { persistTaskInputImages, toReferenceImage } from './lib/inputImages'
 import { orderInputImagesForMask } from './lib/mask'
@@ -606,40 +605,12 @@ export const useStore = create<AppState>()(
           return
         }
 
-        if (settings.agentApiConfigMode === 'off' && activeProfile.provider === 'openai' && activeProfile.apiMode !== 'responses') {
-          state.setConfirmDialog({
-            title: '需要 Responses API 配置',
-            message: `当前配置「${activeProfile.name}」使用的是 Images API，仅支持生成图片，无 Agent 模式需要的对话能力。\n\n请在「设置 → API 配置」中将当前配置调整为 Responses API，或切换/新建一个支持 Responses API 的配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'api')
-            },
-          })
-          return
-        }
-
-        if (settings.agentApiConfigMode !== 'off') {
-          state.setConfirmDialog({
-            title: 'Agent API 配置不完整',
-            message: `${agentValidationError.message}\n\n请在「设置 → Agent 配置」中选择或新建可用配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'agent')
-            },
-          })
-          return
-        }
-
         state.setConfirmDialog({
-          title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请在「设置 → API 配置」中切换或新建一个支持 Responses API 的配置。`,
+          title: 'Agent 文本配置不完整',
+          message: `${agentValidationError.message}\n\n请在「设置 → Agent 配置」中添加文本配置，生图统一由 Garden 执行。`,
           confirmText: '去设置',
           cancelText: '取消',
-          action: () => {
-            useStore.getState().setShowSettings(true, 'api')
-          },
+          action: () => useStore.getState().setShowSettings(true, 'agent'),
         })
       },
 
@@ -1358,13 +1329,8 @@ function getFalRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   return null
 }
 
-function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
-  const taskProfile = getTaskApiProfile(settings, task)
-  if (taskProfile && taskProfile.provider === task.apiProvider && taskProfile.provider !== 'fal') return { ...taskProfile, model: task.apiModel || taskProfile.model }
-  return null
-}
-
 export function getTaskApiProfile(settings: AppSettings, task: TaskRecord): ApiProfile | null {
+  if (task.apiProvider === 'garden') return createDefaultGardenProfile({ timeout: getActiveApiProfile(settings).timeout })
   if (isServerManagedEnabled()) return getActiveApiProfile(settings)
   const normalized = normalizeSettings(settings)
   if (!task.apiProfileId) return null
@@ -1382,12 +1348,6 @@ function getAgentProfileValidationError(settings: AppSettings): { profile: ApiPr
   const textProfileError = validateApiProfile(textProfile)
   if (textProfileError) return { profile: textProfile, message: `文本模型 API 配置不完整：${textProfileError}` }
 
-  if (normalized.agentApiConfigMode === 'hybrid') {
-    const imageProfile = getAgentImageApiProfile(normalized)
-    if (!imageProfile) return { profile: null, message: '图像模型 API 配置不存在，请在「设置 → Agent 配置」中选择可用的图像模型配置。' }
-    const imageProfileError = validateApiProfile(imageProfile)
-    if (imageProfileError) return { profile: imageProfile, message: `图像模型 API 配置不完整：${imageProfileError}` }
-  }
 
   return null
 }
@@ -1403,6 +1363,7 @@ function getTaskApiProfileName(task: TaskRecord) {
 }
 
 function isNetworkRecoverableError(err: unknown) {
+  if (err instanceof GardenApiError) return err.status >= 500 || [401, 408, 429].includes(err.status)
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
   if (err instanceof FetchConnectError) return true
   const message = err instanceof Error ? err.message : String(err)
@@ -1556,68 +1517,14 @@ async function resolveImageSizeParamsList(
   })
 }
 
-async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<ReturnType<typeof getFalQueuedImageResult>>) {
-  const latest = useStore.getState().tasks.find((item) => item.id === task.id)
-  if (!latest || latest.status === 'done' || latest.error === AGENT_STOPPED_MESSAGE) return
-  if (latest.status !== 'running' && !latest.falRecoverable) return
-
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
-  const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
-  const latestBeforeUpdate = useStore.getState().tasks.find((item) => item.id === task.id)
-  if (!latestBeforeUpdate || latestBeforeUpdate.status === 'done' || latestBeforeUpdate.error === AGENT_STOPPED_MESSAGE || (latestBeforeUpdate.status !== 'running' && !latestBeforeUpdate.falRecoverable)) {
-    await deleteUnreferencedImageIds([...outputIds, ...(transparentOriginalImageIds ?? [])])
-    return
-  }
-
-  updateTaskInStore(task.id, {
-    outputImages: outputIds,
-    transparentOriginalImages: transparentOriginalImageIds,
-    actualParams: firstActualParams(actualParamsList),
-    actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
-    revisedPromptByImage: undefined,
-    ...createTaskDonePatch(task, Date.now()),
+async function recoverFalTask(taskId: string) {
+  clearFalRecoveryTimer(taskId)
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task) return
+  updateTaskInStore(taskId, {
+    ...createTaskErrorPatch(task, '旧供应商任务不再自动恢复，请通过 Garden 重新生成', Date.now()),
     falRecoverable: false,
   })
-  if (!isTaskHiddenByPrivacyMode(task)) {
-    useStore.getState().showToast(`fal.ai 任务已恢复，共 ${outputIds.length} 张图片`, 'success')
-    if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `fal.ai 任务已恢复，共 ${outputIds.length} 张图片。`)
-  }
-  if (isAgentTask(task)) void continueRecoveredAgentRound(task.id)
-}
-
-async function recoverFalTask(taskId: string) {
-  const { settings, tasks } = useStore.getState()
-  const task = tasks.find((item) => item.id === taskId)
-  if (!task || task.apiProvider !== 'fal' || !task.falRequestId || !task.falEndpoint || task.status === 'done') return
-
-  const profile = getFalRecoveryProfile(settings, task)
-  if (!profile) {
-    scheduleFalRecovery(taskId)
-    return
-  }
-
-  try {
-    const result = await getFalQueuedImageResult(profile, task.falEndpoint, task.falRequestId, task.params)
-    clearFalRecoveryTimer(taskId)
-    await completeRecoveredFalTask(task, result)
-    return
-  } catch (err) {
-    if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
-    if (isNetworkRecoverableError(err)) {
-      scheduleFalRecovery(taskId)
-      return
-    }
-
-    clearFalRecoveryTimer(taskId)
-    const error = getFalErrorMessage(err) ?? (err instanceof Error ? err.message : String(err))
-    updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, error, Date.now()),
-      ...getRawErrorPayload(err),
-      falRecoverable: false,
-    })
-    showTaskFailureNotification(task)
-    if (isAgentTask(task)) void continueRecoveredAgentRound(taskId)
-  }
 }
 
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片 */
@@ -1826,36 +1733,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     : state
 
   const normalizedSettings = normalizeSettings(settings)
-  let activeProfile = getActiveApiProfile(settings)
-  let requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
-  if (normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
-    const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId, reusedTaskApiModel)
-    if (!reusedProfile) {
-      if (options.useCurrentApiProfileWhenReusedMissing) {
-        useStore.getState().setReusedTaskApiProfile(null)
-      } else {
-        setConfirmDialog({
-          title: '找不到 API 配置',
-      message: `找不到复用任务所使用的 API 配置「${reusedTaskApiProfileName || '未知配置'}」，要使用当前的 API 配置「${activeProfile.name}」提交任务吗？`,
-      confirmText: '使用当前配置提交',
-      cancelText: '放弃提交',
-      action: () => {
-        void submitTask({ ...options, useCurrentApiProfileWhenReusedMissing: true })
-      },
-        })
-        return []
-      }
-    } else {
-      activeProfile = reusedProfile
-      requestSettings = createSettingsForApiProfile(normalizedSettings, reusedProfile)
-    }
-  }
-
-  if (validateApiProfile(activeProfile)) {
-    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
-    useStore.getState().setShowSettings(true)
-    return []
-  }
+  const activeProfile = createDefaultGardenProfile({ timeout: getActiveApiProfile(settings).timeout })
+  const requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
 
   if (!prompt.trim()) {
     showToast('请输入提示词', 'error')
@@ -2136,6 +2015,7 @@ function markAgentRoundTasksStopped(conversationId: string, roundId: string, now
   for (const task of runningTasks) {
     clearFalRecoveryTimer(task.id)
     clearCustomRecoveryTimer(task.id)
+    if (task.apiProvider === 'garden' && task.customTaskId) void cancelJob(task.customTaskId).catch((err) => console.warn('取消 Garden 任务失败', err))
     updateTaskInStore(task.id, {
       ...createTaskErrorPatch(task, AGENT_STOPPED_MESSAGE, now),
       falRecoverable: false,
@@ -2620,7 +2500,7 @@ export async function submitAgentMessage() {
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    state.setShowSettings(true, 'agent')
     return
   }
 
@@ -2774,7 +2654,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    state.setShowSettings(true, 'agent')
     return
   }
 
@@ -3063,10 +2943,10 @@ async function executeAgentRound(
         return true
       }
 
-      if (latestTask.customTaskId) {
+      if (latestTask.customTaskId || latestTask.gardenRequestId) {
         useStore.getState().setTaskStreamPreview(taskId)
         updateTaskInStore(taskId, {
-          ...createTaskErrorPatch(latestTask, '与自定义异步任务的连接已断开，之后会继续查询任务结果。', Date.now()),
+          ...createTaskErrorPatch(latestTask, '与 Garden 任务的连接已断开，之后会继续查询任务结果。', Date.now()),
           customRecoverable: true,
         })
         scheduleCustomRecovery(taskId)
@@ -3189,11 +3069,16 @@ async function executeAgentRound(
       signal: AbortSignal
       onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
     }) => {
+      const task = useStore.getState().tasks.find((item) => item.id === opts.taskId)!
+      const requestId = task.gardenRequestId ?? crypto.randomUUID()
+      updateTaskInStore(opts.taskId, { gardenRequestId: requestId, apiProvider: 'garden' })
+      await putTask({ ...task, gardenRequestId: requestId, apiProvider: 'garden' })
       const result = await callImageApi({
         settings: imageRequestSettings,
+        signal: opts.signal,
         prompt: replaceImageMentionsForApi(opts.prompt, opts.referenceImageDataUrls.length),
         params: opts.taskParams,
-        taskId: opts.taskId,
+        taskId: requestId,
         inputImageDataUrls: opts.referenceImageDataUrls,
         inputImageUrls: opts.referenceImageSourceUrls,
         skipCodexCliSizePrompt: true,
@@ -3210,11 +3095,14 @@ async function executeAgentRound(
             falRecoverable: false,
           })
         },
-        onCustomTaskEnqueued: (request) => {
+        onCustomTaskEnqueued: async (request) => {
           updateTaskInStore(opts.taskId, {
             customTaskId: request.taskId,
             customRecoverable: false,
           })
+          const latest = useStore.getState().tasks.find((item) => item.id === opts.taskId)
+          if (latest) await putTask(latest)
+          if (opts.signal.aborted) await cancelJob(request.taskId)
         },
       })
       if (opts.signal.aborted) throw createAgentAbortError()
@@ -3313,12 +3201,10 @@ async function executeAgentRound(
         const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt))
         const references = await resolveReferenceImages(referenceIds)
         const batchToolCallId = genId()
-        const taskParams = requestSettings.agentApiConfigMode === 'hybrid'
-          ? {
-              ...normalizeParamsForSettings(imageParams, imageRequestSettings, { hasInputImages: references.dataUrls.length > 0, agent: true }),
-              n: 1,
-            }
-          : { ...imageParams, n: 1 }
+        const taskParams = {
+          ...normalizeParamsForSettings(imageParams, imageRequestSettings, { hasInputImages: references.dataUrls.length > 0, agent: true }),
+          n: 1,
+        }
         await ensureStreamingAgentTask(batchToolCallId, item.prompt, references.imageIds, {
           createdAt: Date.now(),
           taskParams,
@@ -3333,8 +3219,7 @@ async function executeAgentRound(
       // Fire all batch items concurrently after all cards are visible.
       const batchPromises = batchExecutionItems.map(async ({ item, batchToolCallId, references, referenceIds, taskParams }) => {
         let committed = false
-        const batchResult = requestSettings.agentApiConfigMode === 'hybrid'
-          ? {
+        const batchResult = {
               batchItemId: item.id,
               ...(await callHybridImageApiSingle({
                 taskId: taskIdByToolCallId.get(batchToolCallId)!,
@@ -3353,43 +3238,11 @@ async function executeAgentRound(
                 },
               })),
             }
-          : await callBatchImageSingle({
-              profile: imageProfile,
-              params: taskParams,
-              batchItemId: item.id,
-              prompt: item.prompt,
-              referenceImageDataUrls: references.dataUrls,
-              referenceIds,
-              allowPromptRewrite: requestSettings.allowPromptRewrite,
-              signal: controller.signal,
-              onImageToolStarted: shouldStreamAssistantMessage
-                ? async () => {
-                    if (controller.signal.aborted) return
-                  }
-                : undefined,
-              onPartialImage: shouldStreamAssistantMessage
-                ? async ({ image, partialImageIndex }) => {
-                    if (controller.signal.aborted) return
-                    const taskId = taskIdByToolCallId.get(batchToolCallId)
-                    if (taskId) {
-                      useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
-                      if (partialImageIndex === 0 || partialImageIndex == null) {
-                        void persistTaskStreamPartialImage(taskId, image)
-                      }
-                    }
-                  }
-                : undefined,
-              onImageToolCompleted: shouldStreamAssistantMessage
-                ? async (image) => {
-                    if (controller.signal.aborted) return
-                    committed = (await completeAgentImageTask({ ...image, toolCallId: batchToolCallId })).committed
-                  }
-                : undefined,
-            })
+
 
         if (controller.signal.aborted) throw createAgentAbortError()
         // If not streaming and we have an image, complete the pre-created task.
-        if (batchResult.image && (requestSettings.agentApiConfigMode === 'hybrid' || !shouldStreamAssistantMessage)) {
+        if (batchResult.image) {
           committed = (await completeAgentImageTask({ ...batchResult.image, toolCallId: batchToolCallId }, batchResult.rawResponsePayload)).committed
         }
 
@@ -3888,14 +3741,6 @@ async function executeTask(taskId: string) {
     ? { taskId: task.customTaskId }
     : null
 
-  if (
-    taskProvider !== 'fal' &&
-    !isAsyncCustomProviderTask(requestSettings, activeProfile, task.inputImageIds.length > 0) &&
-    !usesConcurrentImageRequests(requestSettings, activeProfile, task.params, task.inputImageIds.length > 0)
-  ) {
-    scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
-  }
-
   try {
     // 获取输入图片 data URLs
     const inputDataUrls: string[] = []
@@ -3916,11 +3761,14 @@ async function executeTask(taskId: string) {
       ? task.transparentPrompt
       : task.prompt
 
+    const requestId = task.gardenRequestId ?? crypto.randomUUID()
+    updateTaskInStore(taskId, { gardenRequestId: requestId, apiProvider: 'garden' })
+    await putTask({ ...task, gardenRequestId: requestId, apiProvider: 'garden' })
     const result = await callImageApi({
       settings: requestSettings,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
-      taskId: task.id,
+      taskId: requestId,
       nativeTransparentBackground: task.params.transparent_output && !task.transparentOutput,
       inputImageDataUrls: inputDataUrls,
       inputImageUrls: task.inputImageIds.map((id) => useStore.getState().imageSourceUrls[id] ?? null),
@@ -3940,13 +3788,15 @@ async function executeTask(taskId: string) {
           falRecoverable: false,
         })
       },
-      onCustomTaskEnqueued: (request) => {
+      onCustomTaskEnqueued: async (request) => {
         if (taskExecutions.get(taskId) !== execution) return
         customTaskInfo = request
         updateTaskInStore(taskId, {
           customTaskId: request.taskId,
           customRecoverable: false,
         })
+        const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+        if (latest) await putTask(latest)
       },
       onPartialImage: (partial) => {
         if (taskExecutions.get(taskId) !== execution) return
@@ -4051,10 +3901,10 @@ async function executeTask(taskId: string) {
         falRecoverable: true,
       })
       scheduleFalRecovery(taskId)
-    } else if (latestCustomTaskInfo && isNetworkRecoverableError(err)) {
+    } else if ((latestCustomTaskInfo || latestTask.gardenRequestId) && isNetworkRecoverableError(err)) {
       updateTaskInStore(taskId, {
-        ...createTaskErrorPatch(task, '与自定义异步任务的连接已断开，之后会继续查询任务结果。', Date.now()),
-        customTaskId: latestCustomTaskInfo.taskId,
+        ...createTaskErrorPatch(task, `${err instanceof Error ? err.message : String(err)}\n与 Garden 任务的连接已断开，之后会继续查询任务结果。`, Date.now()),
+        customTaskId: latestCustomTaskInfo?.taskId,
         customRecoverable: true,
       })
       scheduleCustomRecovery(taskId)
@@ -4199,9 +4049,10 @@ export async function retryTask(task: TaskRecord) {
   const { settings, tasks } = state
   const source = tasks.find((item) => item.id === task.id)
   if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
-  const activeProfile = getActiveApiProfile(settings)
-  const normalizedParams = normalizeParamsForSettings(source.params, settings, { hasInputImages: source.inputImageIds.length > 0 })
-  const shouldUseTransparentOutput = normalizedParams.transparent_output && supportsTransparentOutput(settings, activeProfile, normalizedParams.output_format)
+  const activeProfile = createDefaultGardenProfile({ timeout: getActiveApiProfile(settings).timeout })
+  const requestSettings = createSettingsForApiProfile(settings, activeProfile)
+  const normalizedParams = normalizeParamsForSettings(source.params, requestSettings, { hasInputImages: source.inputImageIds.length > 0 })
+  const shouldUseTransparentOutput = normalizedParams.transparent_output && supportsTransparentOutput(requestSettings, activeProfile, normalizedParams.output_format)
   const taskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
     : { ...normalizedParams, transparent_output: false }
@@ -4222,7 +4073,7 @@ export async function retryTask(task: TaskRecord) {
     id: taskId,
     prompt: source.prompt,
     params: taskParams,
-    paramSupport: getTaskParamSupport(settings, activeProfile),
+    paramSupport: getTaskParamSupport(requestSettings, activeProfile),
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
@@ -4249,6 +4100,7 @@ export async function retryTask(task: TaskRecord) {
     falEndpoint: undefined,
     falRecoverable: false,
     customTaskId: undefined,
+    gardenRequestId: undefined,
     customRecoverable: false,
     status: 'running',
     error: null,
@@ -4673,7 +4525,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   showToast('所选数据已清空', 'success')
 }
 
-async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<ReturnType<typeof getCustomQueuedImageResult>>) {
+async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<ReturnType<typeof getJobResult>>) {
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done' || latest.error === AGENT_STOPPED_MESSAGE) return
   if (latest.status !== 'running' && !latest.customRecoverable) return
@@ -4705,21 +4557,51 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
 async function recoverCustomTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
-  if (!task || !task.customTaskId || task.status === 'done') return
-
-  const profile = getCustomRecoveryProfile(settings, task)
-  const definition = profile ? getCustomProviderDefinition(settings, profile.provider) ?? (profile.provider === 'openai' || profile.provider === 'xai' ? OPENAI_IMAGE_TASK_PROVIDER : null) : null
-  const customProvider = profile && definition ? resolveCustomProviderModel(definition, profile.model) : null
-  if (!profile || !customProvider?.poll) {
-    scheduleCustomRecovery(taskId)
+  if (!task || (!task.customTaskId && !task.gardenRequestId) || task.status === 'done' || task.error === AGENT_STOPPED_MESSAGE) return
+  if (task.apiProvider !== 'garden') {
+    updateTaskInStore(taskId, { ...createTaskErrorPatch(task, '旧供应商任务不再自动恢复，请通过 Garden 重新生成', Date.now()), customRecoverable: false })
     return
   }
 
   try {
-    const result = await getCustomQueuedImageResult(profile, customProvider, task.customTaskId, task.params)
+    let result: Awaited<ReturnType<typeof getJobResult>>
+    if (task.customTaskId) {
+      const job = await getJobStatus(task.customTaskId, AbortSignal.timeout(30000))
+      if (['queued', 'running', 'retry_wait'].includes(job.status)) {
+        scheduleCustomRecovery(taskId)
+        return
+      }
+      result = await getJobResult(job, AbortSignal.timeout(30000))
+    } else {
+      const images = await Promise.all(task.inputImageIds.map(async (id) => {
+        const url = await ensureImageCached(id)
+        if (!url) throw new Error('输入图片已不存在')
+        return url
+      }))
+      result = await callImageApi({
+        settings,
+        prompt: replaceImageMentionsForApi(task.transparentPrompt ?? task.prompt, images.length),
+        resumeRequest: true,
+        params: task.params,
+        taskId: task.gardenRequestId,
+        inputImageDataUrls: images,
+        markupDataUrl: task.markupImageId ? await ensureImageCached(task.markupImageId) : undefined,
+        signal: AbortSignal.timeout(30000),
+        onCustomTaskEnqueued: async (request) => {
+          const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!latest) return
+          updateTaskInStore(taskId, { customTaskId: request.taskId })
+          await putTask({ ...latest, customTaskId: request.taskId })
+        },
+      })
+    }
     clearCustomRecoveryTimer(taskId)
     await completeRecoveredCustomTask(task, result)
   } catch (err) {
+    if (isNetworkRecoverableError(err)) {
+      scheduleCustomRecovery(taskId)
+      return
+    }
     clearCustomRecoveryTimer(taskId)
     if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
     const error = err instanceof Error ? err.message : String(err)

@@ -14,7 +14,7 @@ export function isFalRecoverableTask(task: TaskRecord) {
 
 /** 启动时会继续查询结果的自定义异步任务 */
 export function isCustomRecoverableTask(task: TaskRecord) {
-  return Boolean(task.customTaskId) && (task.status === 'running' || Boolean(task.customRecoverable))
+  return Boolean(task.customTaskId || task.gardenRequestId) && (task.status === 'running' || Boolean(task.customRecoverable))
 }
 
 /**

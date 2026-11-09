@@ -1,3 +1,4 @@
+import { createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL } from '../../lib/apiProfiles'
 import {
   DEFAULT_AGENT_MAX_TOOL_ROUNDS,
   type AgentApiConfigMode,
@@ -40,87 +41,21 @@ export default function AgentSettingsTab({
 }: AgentSettingsTabProps) {
   return (
     <div className="space-y-4">
-      <div className="block">
-        <div className="mb-1 flex items-center justify-between gap-3">
-          <span className="block text-sm text-gray-600 dark:text-gray-300">使用独立的 API 配置</span>
-          <div className="w-20 shrink-0">
-            <Select
-              value={draft.agentApiConfigMode}
-              disabled={isPresetAgentFieldLocked('apiConfigMode')}
-              onChange={(value) => updateAgentApiConfigMode(value as AgentApiConfigMode)}
-              options={[
-                { label: '关闭', value: 'off' },
-                { label: '原生', value: 'native' },
-                { label: '混合', value: 'hybrid' },
-              ]}
-              className="w-full px-3 py-1.5 rounded-xl border border-transparent bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.07] dark:hover:bg-white/[0.1] text-xs transition-all duration-200 text-gray-700 dark:text-gray-200 outline-none"
-            />
-          </div>
-        </div>
-        <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500 space-y-1">
-          {(['apiConfigMode', 'textProfileId', 'imageProfileId'] as const).some(isPresetAgentFieldLocked) && (
-            <div>部分选项由部署配置锁定。</div>
-          )}
-          <div>原生：使用原生的 Responses API 配置，由模型调用 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具生成图片。</div>
-          <div>混合：使用非原生的混合 API 配置，由文本模型调用自定义工具，请求图像模型生成图像，解决部分服务商/模型不支持 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具的问题。</div>
-        </div>
-      </div>
-
-      {draft.agentApiConfigMode !== 'off' && (
-        <>
-          <div className="block">
-            <div className="mb-1 flex items-center justify-between gap-3">
-              <span className="block text-sm text-gray-600 dark:text-gray-300">文本模型 API 配置</span>
-              <div className="w-40 shrink-0">
-                {agentTextProfileOptions.length > 0 ? (
-                  <Select
-                    value={selectedAgentTextProfile?.id ?? '请选择配置'}
-                    disabled={isPresetAgentFieldLocked('textProfileId')}
-                    onChange={(value) => commitSettings({ ...draft, agentTextProfileId: String(value) })}
-                    options={agentTextProfileOptions}
-                    showValueTooltips
-                    className="w-full px-3 py-1.5 rounded-xl border border-transparent bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.07] dark:hover:bg-white/[0.1] text-xs transition-all duration-200 text-gray-700 dark:text-gray-200 outline-none"
-                  />
-                ) : (
-                  <div className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-1.5 text-center text-xs text-gray-700 transition-all duration-200 dark:bg-white/[0.06] dark:text-gray-200">
-                    没有可用配置
-                  </div>
-                )}
-              </div>
-            </div>
-            <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-              用于对话和调用工具，仅支持 Responses API 配置。
-            </div>
-          </div>
-
-          {draft.agentApiConfigMode === 'hybrid' && (
-            <div className="block">
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <span className="block text-sm text-gray-600 dark:text-gray-300">图像模型 API 配置</span>
-                <div className="w-40 shrink-0">
-                  {agentImageProfileOptions.length > 0 ? (
-                    <Select
-                      value={selectedAgentImageProfile?.id ?? '请选择配置'}
-                      disabled={isPresetAgentFieldLocked('imageProfileId')}
-                      onChange={(value) => commitSettings({ ...draft, agentImageProfileId: String(value) })}
-                      options={agentImageProfileOptions}
-                      showValueTooltips
-                      className="w-full px-3 py-1.5 rounded-xl border border-transparent bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.07] dark:hover:bg-white/[0.1] text-xs transition-all duration-200 text-gray-700 dark:text-gray-200 outline-none"
-                    />
-                  ) : (
-                    <div className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-1.5 text-center text-xs text-gray-700 transition-all duration-200 dark:bg-white/[0.06] dark:text-gray-200">
-                      没有可用配置
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                用于生成图像，支持所有类型的 API 配置。
-              </div>
-            </div>
-          )}
-        </>
-      )}
+      <p className="text-xs text-gray-500">Agent 通过文本模型规划任务，所有单图和批量生图都由 Garden 执行。</p>
+      <label className="block">
+        <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">Agent 文本模型配置（Responses API）</span>
+        <Select value={draft.agentTextProfileId ?? ''} onChange={(value) => commitSettings({ ...draft, agentApiConfigMode: 'native', agentTextProfileId: String(value) })} options={agentTextProfileOptions} className="w-full rounded-xl bg-black/[0.04] px-3 py-2.5 dark:bg-white/[0.06]" />
+      </label>
+      <button type="button" className="text-sm text-blue-600" onClick={() => {
+        const profile = createDefaultOpenAIProfile({ id: crypto.randomUUID(), name: 'Agent 文本对话', apiMode: 'responses', baseUrl: '', apiKey: '', model: DEFAULT_RESPONSES_MODEL, apiProxy: false })
+        commitSettings({ ...draft, profiles: [...draft.profiles, profile], agentApiConfigMode: 'native', agentTextProfileId: profile.id })
+      }}>添加文本配置</button>
+      {selectedAgentTextProfile && (['baseUrl', 'apiKey', 'model'] as const).map((key) => (
+        <label className="block" key={key}>
+          <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">{key === 'baseUrl' ? '文本 API URL' : key === 'apiKey' ? '文本 API Key' : '文本模型 ID'}</span>
+          <input value={selectedAgentTextProfile[key]} type={key === 'apiKey' ? 'password' : 'text'} autoComplete="off" onChange={(e) => commitSettings({ ...draft, profiles: draft.profiles.map((profile) => profile.id === selectedAgentTextProfile.id ? { ...profile, [key]: e.target.value } : profile) })} className="w-full rounded-xl bg-black/[0.04] px-3 py-2.5 dark:bg-white/[0.06]" />
+        </label>
+      ))}
       <label className="block">
         <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">最大工具调用轮数</span>
         <input

@@ -28,6 +28,9 @@ export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
 export const PROMPT_REWRITE_GUARD_PREFIX = 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:'
 
 export interface CallApiOptions {
+  signal?: AbortSignal
+  /** 断连后重放已持久化的幂等请求，由服务端判定是否已经创建 */
+  resumeRequest?: boolean
   settings: AppSettings
   prompt: string
   params: TaskParams
@@ -44,7 +47,7 @@ export interface CallApiOptions {
   skipCodexCliSizePrompt?: boolean
   onPromptHintsPrepared?: (hints: TaskRecord['promptHints']) => void
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
-  onCustomTaskEnqueued?: (task: { taskId: string }) => void
+  onCustomTaskEnqueued?: (task: { taskId: string }) => void | Promise<void>
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
 }
 

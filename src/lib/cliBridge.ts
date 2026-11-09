@@ -3,6 +3,8 @@ import { listen } from '@tauri-apps/api/event'
 import { GIF_FRAME_COUNT_RANGE, GIF_FRAME_DURATION_RANGE, IMAGE_COMPLEXITIES, MAX_INPUT_IMAGES, OUTPUT_FORMATS, type ApiProfile, type AppSettings, type InputImage, type TaskParams } from '../types'
 import {
   createDefaultOpenAIProfile,
+  createDefaultGardenProfile,
+  createSettingsForApiProfile,
   getActiveApiProfile,
   getCustomProviderDefinition,
   normalizeSettings,
@@ -162,15 +164,13 @@ async function generateImage(requestId: number, args: Record<string, unknown>): 
   if (!prompts.length) throw new Error('提示词不能为空')
 
   // submitTask 遇到这些情况只在界面上提示，这里先检查，把原因交给命令行
-  const profileError = validateApiProfile(getActiveApiProfile(getSettings()))
-  if (profileError) throw new Error(`应用启用的 API 配置不完整：${profileError}`)
   if (useStore.getState().batchProgress) throw new Error('应用正在批量提交任务，请等它完成后再试')
 
   const references = Array.isArray(args.reference_images) ? args.reference_images : []
   if (references.length > MAX_INPUT_IMAGES) throw new Error(`参考图最多 ${MAX_INPUT_IMAGES} 张`)
   const params = parseParams(args)
   // 与 submitTask 相同：按提交时的配置规范化后再检查，不支持 SVG 的模型会自动改用 PNG
-  const settings = getSettings()
+  const settings = createSettingsForApiProfile(getSettings(), createDefaultGardenProfile())
   const finalParams = normalizeParamsForSettings({ ...useStore.getState().params, ...params }, settings, { hasInputImages: references.length > 0 })
   if (references.length && finalParams.output_format === 'svg') throw new Error('SVG 只能用于文生图，请去掉参考图或换用其他格式')
   if (finalParams.transparent_output && !supportsTransparentOutput(settings, getActiveApiProfile(settings), finalParams.output_format)) {
@@ -330,12 +330,12 @@ function saveApiProfile(args: Record<string, unknown>) {
     throw new Error('这个预置的 API 配置已锁定，只能修改 apiKey 和 selectedModel')
   }
 
-  const base = existing ?? createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
+  const base = existing ?? createDefaultGardenProfile({ id: newId('garden'), name: 'Garden 生图服务' })
   const provider = typeof fields.provider === 'string' ? fields.provider : base.provider
   const customProvider = getCustomProviderDefinition(settings, provider)
-  if (!['openai', 'google', 'xai', 'sb2api-async', 'fal'].includes(provider) && !customProvider) throw new Error(`没有这个服务商：${provider}`)
+  if (!['garden', 'openai'].includes(provider)) throw new Error('生图供应商由 Garden 管理；OpenAI 配置仅供 Agent 文本对话使用')
   const switched = provider === base.provider ? base : switchApiProfileProvider(base, provider, customProvider ?? undefined)
-  const profile = { ...switched, ...fields, provider } as ApiProfile
+  const profile = { ...switched, ...fields, provider, ...(provider === 'openai' ? { apiMode: 'responses' } : { baseUrl: '', apiKey: '', model: 'garden-render', apiMode: 'images' }) } as ApiProfile
   if (fields.selectedModel !== undefined && !splitModelList(profile.model).includes(String(fields.selectedModel))) {
     throw new Error(`selectedModel 必须是这个配置的模型之一：${splitModelList(profile.model).join('、')}`)
   }
@@ -409,7 +409,7 @@ async function runTool(request: CliRequest): Promise<CliReply> {
     case 'delete_api_profile':
       return deleteApiProfile(args)
     case 'save_custom_provider':
-      return saveCustomProvider(args)
+      throw new Error('生图供应商配置已移至 Garden 管理后台')
     case 'delete_custom_provider':
       return deleteCustomProvider(args)
     default:

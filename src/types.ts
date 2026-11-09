@@ -325,6 +325,8 @@ export interface TaskRecord {
   falRecoverable?: boolean
   /** 自定义异步服务商任务 ID，用于重启后继续查询结果 */
   customTaskId?: string
+  /** 发出 Garden 请求前持久化，响应丢失时以同一幂等键重放 */
+  gardenRequestId?: string
   /** 自定义异步任务是否等待自动恢复 */
   customRecoverable?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */

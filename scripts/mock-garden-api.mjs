@@ -59,166 +59,89 @@ function solidPng([r, g, b], size) {
 
 const presetPngs = new Map(presetNames.map((name) => [name, solidPng(presetColors[name], imageSize)]))
 
-// ---- 任务存储 ----
-
+// 本地 mock 不访问任何供应商；用请求头 X-Mock-User 模拟归属，缺省为开发用户。
 const jobs = new Map()
-
-function nowIso() {
-  return new Date().toISOString()
+const capabilities = {
+  provider: 'mock-garden', supports_image_input: true, supports_multi_image_input: true,
+  max_total_input_images: 3, max_input_images_per_job: 3, max_output_images_per_job: 4,
 }
 
-function scheduleJob(jobId, mode) {
-  setTimeout(() => {
-    const job = jobs.get(jobId)
-    if (!job) return
-    job.status = 'running'
-    job.started_at = nowIso()
-  }, 400)
-  setTimeout(() => {
-    const job = jobs.get(jobId)
-    if (!job) return
-    job.completed_at = nowIso()
-    if (mode === 'fail') {
-      job.status = 'failed'
-      job.error_code = 'mock_failure'
-      job.error_message = 'Mock 生成失败（mode=fail）'
-      return
-    }
-    job.status = 'succeeded'
-    job.result_asset_id = `asset-${job.preset_key}-${jobId}`
-  }, 1400)
-}
-
-// ---- HTTP 基础设施 ----
-
-function appendCors(headers) {
-  return {
-    ...headers,
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  }
-}
-
-function sendJson(res, status, payload) {
-  res.writeHead(status, appendCors({ 'Content-Type': 'application/json; charset=utf-8' }))
-  res.end(JSON.stringify(payload))
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = ''
-    req.on('data', (chunk) => { body += chunk })
-    req.on('end', () => resolve(body))
-    req.on('error', reject)
-  })
-}
-
-/** 去掉可选的 /api 前缀（vite dev proxy 会 rewrite 剥掉前缀，真实反向代理可能不会） */
-function stripApiPrefix(pathname) {
-  return pathname.startsWith('/api/') ? pathname.slice(4) : pathname
+function sendJson(res, status, value) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(value))
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, appendCors({}))
-    res.end()
-    return
-  }
-
-  const url = new URL(req.url, 'http://mock-garden.local')
-  const path = stripApiPrefix(url.pathname)
-  const failMode = url.searchParams.get('mode') === 'fail'
-
-  const submitMatch = path.match(/^\/schemes\/([^/]+)\/ai-generations$/)
-  if (req.method === 'POST' && submitMatch) {
-    let payload
-    try {
-      payload = JSON.parse(await readBody(req))
-    } catch {
-      sendJson(res, 422, { detail: '请求体不是有效 JSON' })
-      return
+  const url = new URL(req.url, 'http://localhost')
+  const path = url.pathname.replace(/^\/api(?=\/)/, '')
+  if (req.method === 'GET' && path === '/image-capabilities') return sendJson(res, 200, capabilities)
+  const user = req.headers['x-mock-user'] || 'local-user'
+  if (path === '/identity' && req.method === 'GET') return sendJson(res, 200, { username: user, display_name: '本地 Mock 用户' })
+  if (path === '/auth/login' && req.method === 'POST') return sendJson(res, 200, { username: user, display_name: '本地 Mock 用户' })
+  if (path === '/auth/logout' && req.method === 'POST') return sendJson(res, 200, { ok: true })
+  if (user === 'anonymous') return sendJson(res, 401, { detail: '请登录' })
+  try {
+    if (req.method === 'POST' && path === '/image-jobs') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const bytes = Buffer.concat(chunks)
+      const request = new Request(url, { method: 'POST', headers: { 'Content-Type': req.headers['content-type'] || 'application/json' }, body: bytes })
+      const multipart = (req.headers['content-type'] || '').startsWith('multipart/')
+      const form = multipart ? await request.formData() : null
+      const body = form ? Object.fromEntries([...form].filter(([key]) => key !== 'image')) : await request.json()
+      const params = form ? JSON.parse(body.params || '{}') : body.params || {}
+      const images = form ? form.getAll('image') : []
+      if (!['garden-web', 'playground'].includes(body.source_app) || typeof body.prompt !== 'string' || !body.prompt.trim()
+        || typeof body.client_request_id !== 'string' || !body.client_request_id.trim() || body.client_request_id.length > 64
+        || !Number.isInteger(params.n ?? 1) || (params.n ?? 1) < 1 || (params.n ?? 1) > 4 || images.length > 3
+        || images.some((f) => typeof f === 'string' || !f.type.startsWith('image/'))
+        || (form && [...form].some(([key, value]) => typeof value !== 'string' && key !== 'image'))) {
+        return sendJson(res, 422, { detail: '请求参数或参考图片无效' })
+      }
+      const existing = [...jobs.values()].find((j) => j.requested_by_user_id === user && j.source_app === body.source_app && j.client_request_id === body.client_request_id)
+      if (existing) return sendJson(res, 200, existing)
+      const job = {
+        job_id: crypto.randomUUID(), requested_by_user_id: user, source_app: body.source_app,
+        client_request_id: body.client_request_id, prompt: body.prompt, params_json: params,
+        input_images_json: { images: await Promise.all(images.map(async (f, index) => ({ slot: index + 1, mime: f.type, sha256: crypto.createHash('sha256').update(Buffer.from(await f.arrayBuffer())).digest('hex') }))) },
+        status: 'queued', result_assets_json: [], created_at: new Date().toISOString(),
+        error_code: null, error_message: null,
+      }
+      jobs.set(job.job_id, job)
+      setTimeout(() => { if (job.status === 'queued') job.status = 'running' }, 100)
+      setTimeout(() => {
+        if (job.status !== 'running') return
+        job.completed_at = new Date().toISOString()
+        job.status = url.searchParams.get('mode') === 'fail' ? 'failed' : 'succeeded'
+        if (job.status === 'failed') { job.error_code = 'mock_failure'; job.error_message = 'Mock 生成失败' }
+        else job.result_assets_json = Array.from({ length: params.n ?? 1 }, (_, index) => ({ index, mime: 'image/png' }))
+      }, 300)
+      return sendJson(res, 202, job)
     }
-    const required = ['scheme_revision_id', 'preset_key', 'client_request_id']
-    const missing = required.filter((key) => typeof payload?.[key] !== 'string' || !payload[key])
-    if (missing.length) {
-      sendJson(res, 422, { detail: `缺少字段：${missing.join('、')}` })
-      return
+    const match = path.match(/^\/image-jobs\/([^/]+)(?:\/(cancel|results\/(\d+)))?$/)
+    if (match) {
+      const job = jobs.get(decodeURIComponent(match[1]))
+      if (!job || job.requested_by_user_id !== user) return sendJson(res, 404, { detail: '任务不存在' })
+      if (req.method === 'POST' && match[2] === 'cancel') {
+        const cancelled = ['queued', 'running', 'retry_wait'].includes(job.status)
+        if (cancelled) job.status = 'cancelled'
+        return sendJson(res, 200, { job_id: job.job_id, cancelled })
+      }
+      if (req.method === 'GET' && match[3] !== undefined) {
+        const index = Number(match[3])
+        if (job.status !== 'succeeded' || !job.result_assets_json.some((e) => e.index === index)) return sendJson(res, 404, { detail: '任务结果不存在' })
+        const png = presetPngs.get(presetNames[index % presetNames.length])
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store' })
+        return res.end(png)
+      }
+      if (req.method === 'GET' && !match[2]) return sendJson(res, 200, job)
     }
-    if (!presetNames.includes(payload.preset_key)) {
-      sendJson(res, 422, { detail: `preset_key 必须是 ${presetNames.join('|')} 之一` })
-      return
-    }
-    const jobId = crypto.randomUUID()
-    const job = {
-      job_id: jobId,
-      scheme_id: decodeURIComponent(submitMatch[1]),
-      status: 'queued',
-      preset_key: payload.preset_key,
-      error_code: null,
-      error_message: null,
-      result_asset_id: null,
-      client_request_id: payload.client_request_id,
-      created_at: nowIso(),
-      started_at: null,
-      completed_at: null,
-    }
-    jobs.set(jobId, job)
-    scheduleJob(jobId, failMode ? 'fail' : 'ok')
-    sendJson(res, 202, job)
-    return
+    if (req.method === 'POST' && path === '/gallery') return sendJson(res, 200, { status: 'archived' })
+    sendJson(res, 404, { detail: '未找到路由' })
+  } catch (err) {
+    console.warn('Mock 请求失败', err.message)
+    sendJson(res, 422, { detail: '请求体无效' })
   }
-
-  if (req.method === 'GET' && path === '/ai-generations/capability') {
-    sendJson(res, 200, {
-      provider: 'mock-garden',
-      supports_image_input: false,
-      supports_multi_image_input: false,
-      max_total_input_images: 0,
-    })
-    return
-  }
-
-  const jobMatch = path.match(/^\/ai-generations\/([^/]+)$/)
-  if (req.method === 'GET' && jobMatch) {
-    const job = jobs.get(decodeURIComponent(jobMatch[1]))
-    if (!job) {
-      sendJson(res, 404, { detail: '任务不存在' })
-      return
-    }
-    sendJson(res, 200, job)
-    return
-  }
-
-  // 公司画廊归档（本地迁移版本自带功能，不属于 Garden 服务；开发期占位接受即可）
-  if (req.method === 'POST' && path === '/gallery') {
-    sendJson(res, 200, { status: 'archived' })
-    return
-  }
-
-  const mediaMatch = path.match(/^\/media\/([^/]+)\/content$/)
-  if (req.method === 'GET' && mediaMatch) {
-    const assetId = decodeURIComponent(mediaMatch[1])
-    const preset = presetNames.find((name) => assetId.includes(`-${name}-`)) ?? 'noon'
-    const png = presetPngs.get(preset)
-    res.writeHead(200, appendCors({
-      'Content-Type': 'image/png',
-      'Content-Length': String(png.length),
-      ETag: `"${crypto.createHash('sha256').update(png).digest('hex')}"`,
-      'Cache-Control': 'private',
-    }))
-    res.end(png)
-    return
-  }
-
-  sendJson(res, 404, { detail: `未找到路由：${req.method} ${path}` })
 })
 
-server.listen(port, host, () => {
-  console.log(`mock-garden-api listening on http://${host}:${port}`)
-  console.log(`endpoints (both with and without /api prefix):`)
-  console.log(`  POST /api/schemes/{scheme}/ai-generations?mode=fail  提交任务`)
-  console.log(`  GET  /api/ai-generations/capability`)
-  console.log(`  GET  /api/ai-generations/{job_id}`)
-  console.log(`  GET  /api/media/{asset_id}/content`)
-})
+server.listen(port, host, () => console.log(`mock-garden-api listening on http://${host}:${server.address().port}`))

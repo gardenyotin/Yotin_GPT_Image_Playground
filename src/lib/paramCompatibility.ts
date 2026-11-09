@@ -20,6 +20,7 @@ export function getTaskParamSupport(settings: AppSettings, profile: ApiProfile) 
 
 export function getOutputImageLimitForSettings(settings: AppSettings) {
   const profile = getActiveApiProfile(settings)
+  if (profile.provider === 'garden') return 4
   return profile.provider === 'fal' ? MAX_FAL_OUTPUT_IMAGES : MAX_OPENAI_OUTPUT_IMAGES
 }
 
@@ -29,6 +30,7 @@ export function normalizeParamsForSettings(
   options: { hasInputImages?: boolean; agent?: boolean } = {},
 ): TaskParams {
   const activeProfile = getActiveApiProfile(settings)
+  if (activeProfile.provider === 'garden') return { ...params, size: normalizeImageSize(params.size) || params.size }
   const outputImageLimit = getOutputImageLimitForSettings(settings)
   const nextParams: TaskParams = {
     ...params,
@@ -84,6 +86,7 @@ export function normalizeParamsForSettings(
 
 /** 参数面板中不可选的项及原因；normalizeParamsForSettings 按同一结果清洗参数 */
 export function getParamDisabledReasons(profile: ApiProfile, options: { hasInputImages?: boolean; agent?: boolean } = {}): ParamDisabledReasons {
+  if (profile.provider === 'garden') return { complexity: 'Garden 当前不支持复杂度参数', svg: 'Garden 当前不支持 SVG', gif: 'Garden 当前不支持 GIF', extendedQuality: 'Garden 当前最高支持 high' }
   const isFal = profile.provider === 'fal'
   // Responses API 的能力取决于 image_generation 工具的图像模型，而不是首页选择的文本模型
   const isResponses = profile.provider === 'openai' && profile.apiMode === 'responses'
@@ -97,7 +100,7 @@ export function getParamDisabledReasons(profile: ApiProfile, options: { hasInput
     complexity: gptImage26 ? undefined
       : isResponses ? '当前图像模型不支持复杂度参数' : '当前模型不支持复杂度参数',
     gif,
-    // fal.ai 的 SVG 暂不开放，原因见 falAiImageApi 中的说明
+    // 旧供应商配置仅用于读取历史参数，生图能力以 Garden 声明为准
     svg: gif ?? (isFal ? 'fal.ai 暂不支持此格式' : undefined),
     autoQuality: isFal ? 'fal.ai 不支持 auto 质量参数' : undefined,
     extendedQuality: supportsExtendedQuality(profile) ? undefined

@@ -1,3 +1,5 @@
+import GardenCapabilities from '../GardenCapabilities'
+import { useStore } from '../../store'
 import { useEffect, useRef, useState } from 'react'
 import { GIF_FRAME_COUNT_RANGE, GIF_FRAME_DURATION_RANGE, IMAGE_COMPLEXITIES, type ApiProfile, type AppSettings, type BatchProgress, type BatchPromptMode, type ParamDisabledReasons, type TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
@@ -310,16 +312,7 @@ export default function InputParamsPanel({
 
   return (
     <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0 text-xs">
-      <div className="min-w-0 max-w-full max-sm:flex-auto">
-        <Select
-          value={activeProfile.model}
-          onChange={(val) => onModelChange(String(val))}
-          options={modelOptions}
-          showValueTooltips
-          menuClassName="min-w-max"
-          className={CHIP_CLASS}
-        />
-      </div>
+      <div className="basis-full flex flex-wrap items-center gap-2"><GardenCapabilities /><button type="button" className="text-blue-600 dark:text-blue-400" onClick={() => useStore.getState().setShowSettings(true, 'api')}>Garden 账户</button></div>
       {family && (
         <>
           <div className="max-sm:flex-auto sm:shrink-0">

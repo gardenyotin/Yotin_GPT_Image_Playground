@@ -848,7 +848,6 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
 }
 
 export function getAgentTextApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile | null {
-  if (isServerManagedEnabled()) return getActiveApiProfile(settings)
   const normalized = normalizeSettings(settings)
   if (normalized.agentApiConfigMode === 'off') return getActiveApiProfile(normalized)
   const profile = normalized.profiles.find((item) => item.id === normalized.agentTextProfileId)
@@ -856,11 +855,7 @@ export function getAgentTextApiProfile(settings: Partial<AppSettings> | unknown)
 }
 
 export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile | null {
-  if (isServerManagedEnabled()) return getActiveApiProfile(settings)
-  const normalized = normalizeSettings(settings)
-  if (normalized.agentApiConfigMode !== 'hybrid') return getAgentTextApiProfile(normalized)
-  const profile = normalized.profiles.find((item) => item.id === normalized.agentImageProfileId)
-  return profile ? resolveApiProfileModel(profile, undefined, getCustomProviderDefinition(normalized, profile.provider)) : null
+  return createDefaultGardenProfile({ timeout: getActiveApiProfile(settings).timeout })
 }
 
 export function getCustomProviderDefinition(settings: Partial<AppSettings> | unknown, provider: ApiProvider): CustomProviderDefinition | null {
@@ -1018,7 +1013,7 @@ export function getServerManagedSettings(settings: Partial<AppSettings> | unknow
   if (typeof streamImages === 'boolean') serverStreamImages = streamImages
   if (typeof partialImages === 'number') serverPartialImages = normalizeStreamPartialImages(partialImages)
   // 历史配置保留在本机；受管模式的实际请求始终由 getActiveApiProfile 生成。
-  return normalizeSettings({ ...normalizeSettings(settings), reuseTaskApiProfileTemporarily: false, agentApiConfigMode: 'off' })
+  return normalizeSettings({ ...normalizeSettings(settings), reuseTaskApiProfileTemporarily: false })
 }
 
 export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
@@ -1061,7 +1056,9 @@ export function createSettingsForApiProfile(settings: AppSettings, profile: ApiP
     apiMode: profile.apiMode,
     codexCli: profile.codexCli,
     apiProxy: profile.apiProxy,
-    profiles: normalized.profiles.map((item) => item.id === profile.id ? profile : item),
+    profiles: normalized.profiles.some((item) => item.id === profile.id)
+      ? normalized.profiles.map((item) => item.id === profile.id ? profile : item)
+      : [...normalized.profiles, profile],
     activeProfileId: profile.id,
   })
 }

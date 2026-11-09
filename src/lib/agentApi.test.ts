@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCallArguments } from './agentApi'
 
 describe('parseBatchImageCallArguments', () => {
   it('trims ids and prompts, fills missing ids, and skips empty prompts', () => {
@@ -32,33 +32,6 @@ describe('parseBatchImageCallArguments', () => {
       { id: 'same_3', prompt: 'four' },
     ])
     expect(parseBatchImageCallArguments(args)).toEqual(parseBatchImageCallArguments(args))
-  })
-})
-
-describe('callBatchImageSingle', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('reports the image tool error without a misleading streaming hint', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      error: { message: "Tool choice 'required' must be specified with 'tools' parameter." },
-    }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
-
-    const result = await callBatchImageSingle({
-      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', streamImages: true }),
-      params: DEFAULT_PARAMS,
-      batchItemId: 'image_1',
-      prompt: 'prompt',
-      referenceImageDataUrls: [],
-    })
-
-    expect(result).toMatchObject({
-      batchItemId: 'image_1',
-      image: null,
-      error: "Tool choice 'required' must be specified with 'tools' parameter.\n提示：当前使用的 API 可能未正确转发图像生成工具，请尝试更换支持该工具的接口或模型。",
-    })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -128,8 +101,8 @@ describe('callAgentResponsesApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.reasoning).toEqual({ effort: 'xhigh' })
-    expect(body.tools[0].model).toBe('gpt-image-2.5-flare')
-    expect(body.tools[0].partial_images).toBe(2)
+    expect(body.tools[0].name).toBe('generate_image')
+    expect(body.tools.some((tool: { type: string }) => tool.type === 'image_generation')).toBe(false)
     expect(textDeltas).toEqual(['Hel', 'lo'])
     expect(result).toMatchObject({
       responseId: 'resp_1',
@@ -196,17 +169,15 @@ describe('callAgentResponsesApi', () => {
       apiMode: 'responses',
     })
 
-    await callAgentResponsesApi({
+    await expect(callAgentResponsesApi({
       settings: DEFAULT_SETTINGS,
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'edit' }] }],
       maskDataUrl: 'data:image/png;base64,bWFzaw==',
-    })
+    })).rejects.toThrow('不支持蒙版')
 
-    const [, init] = fetchMock.mock.calls[0]
-    const body = JSON.parse(String((init as RequestInit).body))
-    expect(body.tools[0].input_image_mask).toEqual({ image_url: 'data:image/png;base64,bWFzaw==' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('requires resolution in Agent prompts and omits the Codex CLI size parameter', async () => {

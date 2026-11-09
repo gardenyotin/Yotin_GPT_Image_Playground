@@ -97,14 +97,10 @@ vi.mock('./lib/api', () => ({
     revisedPrompts: [],
   })),
 }))
-vi.mock('./lib/falAiImageApi', () => ({
-  getFalErrorMessage: vi.fn((err: unknown) => err instanceof Error ? err.message : String(err)),
-  getFalQueuedImageResult: vi.fn(async () => ({
-    images: [],
-    actualParams: {},
-    actualParamsList: [],
-    revisedPrompts: [],
-  })),
+vi.mock('./lib/gardenImageApi', () => ({
+  cancelJob: vi.fn(async () => ({ cancelled: true })),
+  getJobStatus: vi.fn(async (id: string) => ({ job_id: id, status: 'succeeded' })),
+  getJobResult: vi.fn(async () => ({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })),
 }))
 vi.mock('./lib/transparentImage', () => ({
   GREEN_KEY_COLOR: '#00FF00',
@@ -127,11 +123,7 @@ vi.mock('./lib/agentApi', async (importOriginal) => {
     ...actual,
     callAgentConversationTitleApi: vi.fn(async () => '标题'),
     callAgentResponsesApi: vi.fn(() => new Promise(() => {})),
-    callBatchImageSingle: vi.fn(async (opts: { batchItemId: string; prompt: string }) => ({
-      batchItemId: opts.batchItemId,
-      image: { dataUrl: 'data:image/png;base64,batch-output', revisedPrompt: opts.prompt },
-      error: null,
-    })),
+
   }
 })
 vi.mock('./lib/browserNotification', async (importOriginal) => ({
@@ -141,15 +133,14 @@ vi.mock('./lib/browserNotification', async (importOriginal) => ({
 import { showBrowserNotification } from './lib/browserNotification'
 import { clearAgentConversations, clearImages, clearTasks, commitTaskDeletion, deleteImage as deleteDbImage, deleteTask as deleteDbTask, getAllAgentConversations, getAllImageIds, getAllTasks, getImage, getStoredImageThumbnail, putAgentConversation, putImage, putImageThumbnail, putTask as putDbTask } from './lib/db'
 import { callImageApi } from './lib/api'
-import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
-import { getFalQueuedImageResult } from './lib/falAiImageApi'
+import { callAgentResponsesApi } from './lib/agentApi'
+import { getJobStatus, getJobResult } from './lib/gardenImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const commitTaskDeletionImplementation = vi.mocked(commitTaskDeletion).getMockImplementation()!
 const deleteDbImageImplementation = vi.mocked(deleteDbImage).getMockImplementation()!
 const deleteDbTaskImplementation = vi.mocked(deleteDbTask).getMockImplementation()!
-const callBatchImageSingleImplementation = vi.mocked(callBatchImageSingle).getMockImplementation()!
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -889,7 +880,7 @@ describe('mask draft lifecycle in store actions', () => {
     await clearImages()
   })
 
-  it('keeps native transparent output unchanged and requests API transparency', async () => {
+  it('uses local transparent post-processing even with an old native transparency profile', async () => {
     const { callImageApi } = await import('./lib/api')
     vi.mocked(callImageApi).mockClear()
     vi.mocked(removeKeyedBackgroundFromDataUrl).mockClear()
@@ -913,15 +904,15 @@ describe('mask draft lifecycle in store actions', () => {
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: '透明玻璃瓶',
-      nativeTransparentBackground: true,
+      prompt: 'transparent:透明玻璃瓶',
+      nativeTransparentBackground: false,
     }))
-    expect(removeKeyedBackgroundFromDataUrl).not.toHaveBeenCalled()
+    expect(removeKeyedBackgroundFromDataUrl).toHaveBeenCalledOnce()
     const [task] = useStore.getState().tasks
-    expect(task.transparentOutput).toBeUndefined()
-    expect(task.transparentPrompt).toBeUndefined()
-    expect(task.transparentOriginalImages).toBeUndefined()
-    expect((await getImage(task.outputImages[0]))?.dataUrl).toBe('data:image/png;base64,native-transparent')
+    expect(task.transparentOutput).toBe(true)
+    expect(task.transparentPrompt).toBe('transparent:透明玻璃瓶')
+    expect(task.transparentOriginalImages).toHaveLength(1)
+    expect((await getImage(task.outputImages[0]))?.dataUrl).toBe('transparent:data:image/png;base64,native-transparent')
     await clearTasks()
     await clearImages()
   })
@@ -1000,7 +991,7 @@ describe('mask draft lifecycle in store actions', () => {
     }))
     expect(removeKeyedBackgroundFromDataUrl).toHaveBeenCalledWith('data:image/png;base64,fal-generated')
     const [task] = useStore.getState().tasks
-    expect(task.apiProvider).toBe('fal')
+    expect(task.apiProvider).toBe('garden')
     expect(task.transparentOutput).toBe(true)
     expect(task.transparentOriginalImages).toHaveLength(1)
     await clearTasks()
@@ -1470,12 +1461,12 @@ describe('agent conversation persistence', () => {
 
 })
 
-describe('fal task recovery', () => {
+describe('Garden task recovery', () => {
   beforeEach(async () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
-    vi.mocked(getFalQueuedImageResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(getJobResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     vi.mocked(callAgentResponsesApi).mockReset().mockResolvedValue({ text: '', images: [], outputItems: [], responseId: 'response-default' })
     vi.mocked(removeKeyedBackgroundFromDataUrl).mockReset().mockImplementation(async (dataUrl) => `transparent:${dataUrl}`)
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
@@ -1496,7 +1487,7 @@ describe('fal task recovery', () => {
   it('applies transparent post-processing when a fal task recovers', async () => {
     const falTask = task({
       id: 'fal-transparent-task',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: 'fal-profile',
       apiProfileName: 'fal',
       apiModel: 'fal-model',
@@ -1509,14 +1500,14 @@ describe('fal task recovery', () => {
       transparentPrompt: 'transparent:prompt',
       status: 'error',
       error: '连接已断开，等待自动恢复',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       finishedAt: null,
       elapsed: null,
     })
     await putDbTask(falTask)
-    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+    vi.mocked(getJobResult).mockResolvedValueOnce({
       images: ['data:image/png;base64,fal-recovered'],
       actualParams: { output_format: 'png' },
       actualParamsList: [{ output_format: 'png' }],
@@ -1525,14 +1516,14 @@ describe('fal task recovery', () => {
 
     await initStore()
     await vi.waitFor(() => {
-      expect(useStore.getState().tasks.find((item) => item.id === falTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+      expect(useStore.getState().tasks.find((item) => item.id === falTask.id)).toMatchObject({ status: 'done', customRecoverable: false })
     })
 
     expect(removeKeyedBackgroundFromDataUrl).toHaveBeenCalledWith('data:image/png;base64,fal-recovered')
     const recovered = useStore.getState().tasks.find((item) => item.id === falTask.id)
     expect(recovered).toMatchObject({
       status: 'done',
-      falRecoverable: false,
+      customRecoverable: false,
       transparentOutput: true,
     })
     expect(recovered?.transparentOriginalImages).toHaveLength(1)
@@ -1545,15 +1536,15 @@ describe('fal task recovery', () => {
   it('deletes a normalized error round with an in-flight recoverable task without reviving it', async () => {
     const agentTask = task({
       id: 'agent-restart-task',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: 'fal-profile',
       apiProfileName: 'fal',
       apiModel: 'fal-model',
       status: 'error',
       error: '等待自动恢复',
-      falRequestId: 'restart-request-id',
+      customTaskId: 'restart-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1581,13 +1572,13 @@ describe('fal task recovery', () => {
         { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
       ],
     })
-    const recovery = deferred<Awaited<ReturnType<typeof getFalQueuedImageResult>>>()
-    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => recovery.promise)
+    const recovery = deferred<Awaited<ReturnType<typeof getJobResult>>>()
+    vi.mocked(getJobResult).mockImplementationOnce(() => recovery.promise)
     await putDbTask(agentTask)
     await putAgentConversation(conversation)
 
     await initStore()
-    await vi.waitFor(() => expect(getFalQueuedImageResult).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(getJobResult).toHaveBeenCalledTimes(1))
     expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({
       status: 'error',
       error: '上次请求已中断',
@@ -1621,15 +1612,15 @@ describe('fal task recovery', () => {
     const agentTask = task({
       id: 'agent-fal-task',
       prompt: '画一只猫',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: imageProfile.id,
       apiProfileName: imageProfile.name,
       apiModel: imageProfile.model,
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1661,7 +1652,7 @@ describe('fal task recovery', () => {
         { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
       ],
     })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValue({
+    vi.mocked(getJobResult).mockResolvedValue({
       images: ['data:image/png;base64,agent-recovered'],
       actualParams: {},
       actualParamsList: [{}],
@@ -1699,7 +1690,7 @@ describe('fal task recovery', () => {
     await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
 
     const recoveredTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
-    expect(recoveredTask).toMatchObject({ status: 'done', falRecoverable: false })
+    expect(recoveredTask).toMatchObject({ status: 'done', customRecoverable: false })
     expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
     const agentInputJson = JSON.stringify(vi.mocked(callAgentResponsesApi).mock.calls[0][0].input)
     expect(agentInputJson).toContain('function_call_output')
@@ -1717,15 +1708,15 @@ describe('fal task recovery', () => {
     const agentTask = task({
       id: 'agent-fal-task',
       prompt: '画一只猫',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: imageProfile.id,
       apiProfileName: imageProfile.name,
       apiModel: imageProfile.model,
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1757,7 +1748,7 @@ describe('fal task recovery', () => {
         { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
       ],
     })
-    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
+    vi.mocked(getJobResult).mockRejectedValueOnce(new Error('quota exceeded'))
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -1782,7 +1773,7 @@ describe('fal task recovery', () => {
 
     expect(callAgentResponsesApi).not.toHaveBeenCalled()
     const failedTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
-    expect(failedTask).toMatchObject({ status: 'error', error: 'quota exceeded', falRecoverable: false })
+    expect(failedTask).toMatchObject({ status: 'error', error: 'quota exceeded', customRecoverable: false })
     const round = useStore.getState().agentConversations[0].rounds[0]
     expect(round).toMatchObject({ status: 'error', error: 'quota exceeded' })
     const toolOutput = round.responseOutput?.find((item) => item.type === 'function_call_output')
@@ -1797,15 +1788,15 @@ describe('fal task recovery', () => {
     const agentTask = task({
       id: 'agent-fal-task',
       prompt: '画一只猫',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: imageProfile.id,
       apiProfileName: imageProfile.name,
       apiModel: imageProfile.model,
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'limit-request-id',
+      customTaskId: 'limit-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1837,7 +1828,7 @@ describe('fal task recovery', () => {
         { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
       ],
     })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+    vi.mocked(getJobResult).mockResolvedValueOnce({
       images: ['data:image/png;base64,agent-recovered-limit'],
       actualParams: {},
       actualParamsList: [{}],
@@ -1876,15 +1867,15 @@ describe('fal task recovery', () => {
     const agentTask = task({
       id: 'agent-fal-task',
       prompt: '画一只猫',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: imageProfile.id,
       apiProfileName: imageProfile.name,
       apiModel: imageProfile.model,
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1916,7 +1907,7 @@ describe('fal task recovery', () => {
         { id: 'assistant-a', role: 'assistant', content: '已停止生成。', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
       ],
     })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+    vi.mocked(getJobResult).mockResolvedValueOnce({
       images: ['data:image/png;base64,agent-recovered-after-stop'],
       actualParams: {},
       actualParamsList: [{}],
@@ -1941,11 +1932,11 @@ describe('fal task recovery', () => {
 
     await initStore()
     await vi.waitFor(() => {
-      expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+      expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', customRecoverable: false })
     })
 
     expect(callAgentResponsesApi).not.toHaveBeenCalled()
-    expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+    expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', customRecoverable: false })
     expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'error', error: '已停止生成。' })
   })
 
@@ -1953,15 +1944,15 @@ describe('fal task recovery', () => {
     const agentTask = task({
       id: 'agent-fal-task',
       prompt: '画一只猫',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: 'fal-profile',
       apiProfileName: 'fal',
       apiModel: 'fal-model',
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -1970,8 +1961,8 @@ describe('fal task recovery', () => {
       finishedAt: Date.now(),
       elapsed: 10,
     })
-    const recovery = deferred<Awaited<ReturnType<typeof getFalQueuedImageResult>>>()
-    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => recovery.promise)
+    const recovery = deferred<Awaited<ReturnType<typeof getJobResult>>>()
+    vi.mocked(getJobResult).mockImplementationOnce(() => recovery.promise)
     const conversation = agentConversation({
       id: 'conversation-a',
       activeRoundId: 'round-a',
@@ -2004,7 +1995,7 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    await vi.waitFor(() => expect(getFalQueuedImageResult).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(getJobResult).toHaveBeenCalledTimes(1))
     useStore.setState((state) => ({
       agentConversations: state.agentConversations.map((item) => item.id === 'conversation-a'
         ? { ...item, rounds: item.rounds.map((round) => round.id === 'round-a' ? { ...round, status: 'running', error: null } : round) }
@@ -2019,13 +2010,13 @@ describe('fal task recovery', () => {
     })
     await recovery.promise
     await vi.waitFor(() => {
-      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: '已停止生成。', falRecoverable: false })
+      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: '已停止生成。', customRecoverable: false })
     })
 
     expect(useStore.getState().tasks[0]).toMatchObject({
       status: 'error',
       error: '已停止生成。',
-      falRecoverable: false,
+      customRecoverable: false,
       outputImages: [],
     })
   })
@@ -2035,9 +2026,9 @@ describe('fal task recovery', () => {
       id: 'agent-fal-task',
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -2077,7 +2068,7 @@ describe('fal task recovery', () => {
     expect(useStore.getState().tasks[0]).toMatchObject({
       status: 'error',
       error: '已停止生成。',
-      falRecoverable: false,
+      customRecoverable: false,
     })
     expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({
       status: 'error',
@@ -3800,7 +3791,7 @@ describe('task deletion', () => {
     vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     vi.mocked(commitTaskDeletion).mockReset().mockImplementation(commitTaskDeletionImplementation)
     vi.mocked(deleteDbImage).mockReset().mockImplementation(deleteDbImageImplementation)
-    vi.mocked(getFalQueuedImageResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(getJobResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     vi.mocked(removeKeyedBackgroundFromDataUrl).mockReset().mockImplementation(async (dataUrl) => `transparent:${dataUrl}`)
     useStore.setState({
       tasks: [],
@@ -4562,7 +4553,7 @@ describe('agent built-in image tool failure', () => {
     await submitAgentMessage()
     await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
-    expect(vi.mocked(callAgentResponsesApi).mock.calls[0][0].params.size).toBe('1024x1024')
+    expect(vi.mocked(callAgentResponsesApi).mock.calls[0][0].params.size).toBe('2048x2048')
   })
 
   it('does not apply Codex text-profile limits to a non-Codex image profile', async () => {
@@ -5198,7 +5189,7 @@ describe('agent built-in image tool failure', () => {
       return { text: '', images: [], outputItems, responseId: 'response-recovery' }
     })
     vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
-      opts.onFalRequestEnqueued?.({ requestId: 'fal-request', endpoint: 'fal-endpoint' })
+      await opts.onCustomTaskEnqueued?.({ taskId: 'garden-job' })
       throw new Error('Failed to fetch')
     })
 
@@ -5207,13 +5198,13 @@ describe('agent built-in image tool failure', () => {
       const state = useStore.getState()
       const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
       const responseOutput = JSON.stringify(state.agentConversations[0].rounds[0]?.responseOutput)
-      expect(recoveryTask?.falRecoverable).toBe(true)
+      expect(recoveryTask?.customRecoverable).toBe(true)
       expect(responseOutput).not.toContain('ig-deleted-recovery')
     })
 
     const state = useStore.getState()
     const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
-    expect(recoveryTask).toMatchObject({ status: 'error', falRecoverable: true })
+    expect(recoveryTask).toMatchObject({ status: 'error', customRecoverable: true })
     expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
     expect(state.agentConversations[0].rounds[0].status).toBe('running')
     expect(JSON.stringify(state.agentConversations[0].rounds[0].responseOutput)).not.toContain('ig-deleted-recovery')
@@ -5231,11 +5222,11 @@ describe('agent batch reference resolution', () => {
   })
 
   beforeEach(async () => {
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: ['data:image/png;base64,batch-output'] })
     await clearImages()
     await putImage(imageA)
     await putImage(imageB)
     vi.mocked(callAgentResponsesApi).mockReset()
-    vi.mocked(callBatchImageSingle).mockReset().mockImplementation(callBatchImageSingleImplementation)
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -5343,12 +5334,11 @@ describe('agent batch reference resolution', () => {
 
     await submitAgentMessage()
 
-    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
-    expect(callBatchImageSingle).toHaveBeenCalled()
-    const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
-    expect(batchArgs.referenceImageDataUrls).toEqual([imageB.dataUrl])
-    expect(batchArgs.referenceImageDataUrls).not.toContain(imageA.dataUrl)
-    expect(batchArgs.referenceIds).toEqual(['round-2-image-1'])
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalled())
+    expect(callImageApi).toHaveBeenCalled()
+    const batchArgs = vi.mocked(callImageApi).mock.calls[0][0]
+    expect(batchArgs.inputImageDataUrls).toEqual([imageB.dataUrl])
+    expect(batchArgs.inputImageDataUrls).not.toContain(imageA.dataUrl)
   })
 
   it('resolves batch references to current round input images', async () => {
@@ -5379,11 +5369,10 @@ describe('agent batch reference resolution', () => {
 
     await submitAgentMessage()
 
-    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
-    expect(callBatchImageSingle).toHaveBeenCalled()
-    const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
-    expect(batchArgs.referenceImageDataUrls).toEqual([imageA.dataUrl])
-    expect(batchArgs.referenceIds).toEqual(['round-3-reference-1'])
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalled())
+    expect(callImageApi).toHaveBeenCalled()
+    const batchArgs = vi.mocked(callImageApi).mock.calls[0][0]
+    expect(batchArgs.inputImageDataUrls).toEqual([imageA.dataUrl])
   })
 
   afterEach(async () => {
@@ -5796,26 +5785,26 @@ describe('task failure notification', () => {
     useStore.setState({ settings: normalizeSettings({ ...useStore.getState().settings, profiles: [falProfile], activeProfileId: falProfile.id }) })
     await putDbTask(task({
       id: 'fal-task',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: 'fal-profile',
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       finishedAt: null,
       elapsed: null,
     }))
-    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
+    vi.mocked(getJobResult).mockRejectedValueOnce(new Error('quota exceeded'))
 
     await initStore()
-    await vi.waitFor(() => expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: 'quota exceeded', falRecoverable: false }))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: 'quota exceeded', customRecoverable: false }))
 
     expect(showBrowserNotification).toHaveBeenCalledOnce()
     expect(showBrowserNotification).toHaveBeenCalledWith('图像生成失败', { body: '请回到应用查看详情。', tag: 'task-failure' })
   })
 
-  it('notifies a watchdog timeout once and ignores the late request failure', async () => {
+  it('preserves a pending Garden request on timeout for idempotent recovery', async () => {
     vi.useFakeTimers()
     try {
       const timeoutProfile = createDefaultOpenAIProfile({ id: 'timeout-profile', apiKey: 'test-key', timeout: 1 })
@@ -5826,12 +5815,14 @@ describe('task failure notification', () => {
       await submitTask()
       await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
       await vi.advanceTimersByTimeAsync(1000)
-      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error' })
-      request.reject(new Error('late failure'))
+      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'running' })
+      request.reject(new DOMException('请求超时', 'AbortError'))
       await vi.advanceTimersByTimeAsync(0)
 
-      expect(showBrowserNotification).toHaveBeenCalledOnce()
-      expect(showBrowserNotification).toHaveBeenCalledWith('图像生成失败', expect.objectContaining({ tag: 'task-failure' }))
+      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', customRecoverable: true })
+      expect(useStore.getState().tasks[0].gardenRequestId).toBeTruthy()
+      await removeTask(useStore.getState().tasks[0])
+      expect(showBrowserNotification).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
@@ -5853,13 +5844,13 @@ describe('task failure notification', () => {
     })
     await putDbTask(task({
       id: 'agent-fal-task',
-      apiProvider: 'fal',
+      apiProvider: 'garden',
       apiProfileId: imageProfile.id,
       status: 'error',
       error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
+      customTaskId: 'fal-request-id',
       falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
+      customRecoverable: true,
       sourceMode: 'agent',
       agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
@@ -5889,7 +5880,7 @@ describe('task failure notification', () => {
         { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: ['agent-fal-task'], createdAt: 2 },
       ],
     }))
-    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
+    vi.mocked(getJobResult).mockRejectedValueOnce(new Error('quota exceeded'))
 
     await initStore()
     await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]).toMatchObject({ status: 'error', error: 'quota exceeded' }))
@@ -5938,7 +5929,9 @@ describe('client connection errors', () => {
     await submitTask()
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
 
-    expect(useStore.getState().tasks[0].error).toBe('无法解析域名，请检查 API 地址是否正确。（错误码 11001）')
+    expect(useStore.getState().tasks[0].error).toContain('无法解析域名，请检查 API 地址是否正确。（错误码 11001）')
+    expect(useStore.getState().tasks[0].customRecoverable).toBe(true)
+    await removeTask(useStore.getState().tasks[0])
   })
 
   it('keeps the immediate failure hint for the fallback reason', async () => {
@@ -5948,15 +5941,17 @@ describe('client connection errors', () => {
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
 
     const error = useStore.getState().tasks[0].error!
-    expect(error.startsWith('无法连接到服务器。（unexpected eof）\n提示：请求立即失败，可能原因：')).toBe(true)
+    expect(error.startsWith('无法连接到服务器。（unexpected eof）\n与 Garden')).toBe(true)
     expect(error).not.toContain('Failed to fetch')
+    expect(useStore.getState().tasks[0].gardenRequestId).toBeTruthy()
+    await removeTask(useStore.getState().tasks[0])
   })
 
-  it('treats a connection error as recoverable for queued fal requests', async () => {
+  it('recovers legacy-profile submissions through Garden after a connection error', async () => {
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
     useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [falProfile], activeProfileId: falProfile.id }) })
     vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
-      opts.onFalRequestEnqueued?.({ requestId: 'fal-request', endpoint: 'fal-endpoint' })
+      await opts.onCustomTaskEnqueued?.({ taskId: 'garden-job' })
       // 消息不含“连接”“断开”等字样，只能靠错误类型判断为可恢复
       throw new FetchConnectError('无法解析域名，请检查 API 地址是否正确。（错误码 11001）')
     })
@@ -5964,14 +5959,14 @@ describe('client connection errors', () => {
     await submitTask()
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
 
-    expect(useStore.getState().tasks[0]).toMatchObject({ falRecoverable: true, error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。' })
+    expect(useStore.getState().tasks[0]).toMatchObject({ customRecoverable: true, customTaskId: 'garden-job', apiProvider: 'garden' })
     await removeTask(useStore.getState().tasks[0])
   })
 
   it.each([
     ['连接被服务器重置。（错误码 10054）', true],
     ['无法解析域名，请检查 API 地址是否正确。（错误码 11001）', false],
-  ])('adds the gateway timeout hint after about 60 seconds only when the connection was dropped: %s', async (reason, hinted) => {
+  ])('preserves the connection reason and request identity after 60 seconds: %s', async (reason, hinted) => {
     const now = Date.now()
     const dateNow = vi.spyOn(Date, 'now')
     vi.mocked(callImageApi).mockImplementationOnce(async () => {
@@ -5987,8 +5982,9 @@ describe('client connection errors', () => {
     }
 
     const error = useStore.getState().tasks[0].error!
-    if (hinted) expect(error.startsWith(`${reason}\n提示：请求等待约 60 秒后被断开`)).toBe(true)
-    else expect(error).toBe(reason)
+    expect(error).toContain(reason)
+    expect(useStore.getState().tasks[0].customRecoverable).toBe(true)
+    await removeTask(useStore.getState().tasks[0])
   })
 })
 

@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM --platform=$BUILDPLATFORM node:20-alpine AS build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -19,6 +19,7 @@ RUN npm run build
 # ---- Production stage ----
 FROM nginx:alpine
 
+ENV GARDEN_API_URL=http://host.docker.internal:8000
 ENV HOST=0.0.0.0
 ENV PORT=80
 ENV DEFAULT_API_URL=
