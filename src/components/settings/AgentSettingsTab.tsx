@@ -8,6 +8,7 @@ import {
 import { normalizeAgentMaxToolRounds } from '../../lib/apiProfiles'
 import { isPresetAgentFieldLocked } from '../../lib/presetConfig'
 import Select from '../Select'
+import { createUuid } from '../../lib/uuid'
 
 interface SelectOption {
   label: string
@@ -47,7 +48,7 @@ export default function AgentSettingsTab({
         <Select value={draft.agentTextProfileId ?? ''} onChange={(value) => commitSettings({ ...draft, agentApiConfigMode: 'native', agentTextProfileId: String(value) })} options={agentTextProfileOptions} className="w-full rounded-xl bg-black/[0.04] px-3 py-2.5 dark:bg-white/[0.06]" />
       </label>
       <button type="button" className="text-sm text-blue-600" onClick={() => {
-        const profile = createDefaultOpenAIProfile({ id: crypto.randomUUID(), name: 'Agent 文本对话', apiMode: 'responses', baseUrl: '', apiKey: '', model: DEFAULT_RESPONSES_MODEL, apiProxy: false })
+        const profile = createDefaultOpenAIProfile({ id: createUuid(), name: 'Agent 文本对话', apiMode: 'responses', baseUrl: '', apiKey: '', model: DEFAULT_RESPONSES_MODEL, apiProxy: false })
         commitSettings({ ...draft, profiles: [...draft.profiles, profile], agentApiConfigMode: 'native', agentTextProfileId: profile.id })
       }}>添加文本配置</button>
       {selectedAgentTextProfile && (['baseUrl', 'apiKey', 'model'] as const).map((key) => (

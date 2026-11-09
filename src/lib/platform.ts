@@ -1,5 +1,6 @@
 import { invoke, isTauri as detectTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { createUuid } from './uuid'
 
 export const isTauri = detectTauri()
 
@@ -37,7 +38,7 @@ export async function apiFetch(input: string | URL, init: RequestInit = {}): Pro
   const req = new Request(input, { ...init, signal: null })
   const body = new Uint8Array(await req.arrayBuffer())
   if (signal?.aborted) throw abortReason(signal)
-  const id = crypto.randomUUID()
+  const id = createUuid()
   const cancel = () => cancelRequest(id)
   const token = {}
   const settle = () => {

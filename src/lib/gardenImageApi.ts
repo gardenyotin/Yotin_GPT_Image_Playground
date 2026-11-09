@@ -1,5 +1,6 @@
 import type { ApiProfile } from '../types'
 import { base64ToBytes, blobToDataUrl } from './dataUrl'
+import { createUuid } from './uuid'
 import { readRuntimeEnv } from './runtimeEnv'
 import { createRequestTimeoutError, getApiErrorMessage, type CallApiOptions, type CallApiResult } from './imageApiShared'
 
@@ -73,7 +74,7 @@ export async function submitJob(opts: CallApiOptions, signal?: AbortSignal): Pro
   }
   if (opts.nativeTransparentBackground) throw new Error('Garden 当前不支持原生透明背景，请使用本地后处理')
   if (opts.maskDataUrl) throw new Error('Garden 当前不支持蒙版编辑')
-  const id = opts.taskId ?? crypto.randomUUID()
+  const id = opts.taskId ?? createUuid()
   if (!id || id.length > 64) throw new Error('Garden 请求标识必须为 1..64 字符')
   const body = new FormData()
   body.set('client_request_id', id)

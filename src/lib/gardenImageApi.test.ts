@@ -11,6 +11,14 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Garden 通用生图客户端', () => {
+  it('没有 randomUUID 的 HTTP 环境仍能生成有效幂等键并提交', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+    const fetch = vi.fn().mockResolvedValueOnce(json(caps)).mockResolvedValueOnce(json({ job_id: 'http-job' }, 202))
+    vi.stubGlobal('fetch', fetch)
+    expect((await submitJob({ ...opts, taskId: undefined })).job_id).toBe('http-job')
+    expect(fetch.mock.calls[1][1].body.get('client_request_id')).toMatch(/^[a-f0-9-]{36}$/)
+  })
+
   it('上传原文与有序参考图，持久化任务 ID 并按索引取多张图片', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(json(caps)).mockResolvedValueOnce(json({ job_id: 'job', status: 'queued' }, 202))
       .mockResolvedValueOnce(json({ job_id: 'job', status: 'running' }))

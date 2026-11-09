@@ -48,6 +48,7 @@ import {
   storeImageWithSize,
 } from './lib/db'
 import { callImageApi } from './lib/api'
+import { createUuid } from './lib/uuid'
 import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInputBuilder'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
@@ -3070,7 +3071,7 @@ async function executeAgentRound(
       onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
     }) => {
       const task = useStore.getState().tasks.find((item) => item.id === opts.taskId)!
-      const requestId = task.gardenRequestId ?? crypto.randomUUID()
+      const requestId = task.gardenRequestId ?? createUuid()
       updateTaskInStore(opts.taskId, { gardenRequestId: requestId, apiProvider: 'garden' })
       await putTask({ ...task, gardenRequestId: requestId, apiProvider: 'garden' })
       const result = await callImageApi({
@@ -3761,7 +3762,7 @@ async function executeTask(taskId: string) {
       ? task.transparentPrompt
       : task.prompt
 
-    const requestId = task.gardenRequestId ?? crypto.randomUUID()
+    const requestId = task.gardenRequestId ?? createUuid()
     updateTaskInStore(taskId, { gardenRequestId: requestId, apiProvider: 'garden' })
     await putTask({ ...task, gardenRequestId: requestId, apiProvider: 'garden' })
     const result = await callImageApi({
