@@ -1,5 +1,81 @@
 # 公司 AI 图像共享平台 IT 运维操作手册
 
+## 2026年11月9日远程核验与维护入口
+
+本节来自实际 SSH 和 HTTP 核查，优先于后文旧版操作说明。本轮没有更新程序、重启服务、改供应商配置或执行生图。后续发布前仍须重新核对运行状态与备份。
+
+### 登录与部署位置
+
+- 本机 `/home/yotin/.ssh/config` 已配置 `ssh yotin220`，目标 `yotin@192.168.0.220:22`；已用禁止密码的独立连接验证成功。
+- 本机专用私钥为 `~/.ssh/id_ed25519_yotin220`，权限 600；公钥已追加到远端 `~/.ssh/authorized_keys`，保留原有密钥。公钥指纹为 `SHA256:TOabQMxjd3/Ga3zXYR9qdlsVNY7e7Gcm7HrvUSBI7us`。
+- 不记录密码或私钥内容；此配置仅保证该本机可免密登录，sudo 仍沿用服务器权限规则。
+- 主机名 `yotin-Macmini`，Linux Mint 22.3，Python 3.12.3。
+- `http://192.168.0.220:5731/` 返回 200，标题 `GPT Image Playground`；`/api/health` 返回 `{"ok":true,"service":"ai-gallery"}`。
+- 监听 `0.0.0.0:5731`，Python 进程由 systemd 管理，不是 Docker 服务；核验时 PID 3945826，启动于 2026-11-02 16:57（该 PID 不是长期配置）。
+- 服务文件 `/etc/systemd/system/ai-gallery.service`；已 enabled、active/running；用户/组 `yotin:yotin`。
+- 工作目录 `/opt/ai-gallery`；命令 `/usr/bin/python3 /opt/ai-gallery/server.py`；EnvironmentFile `/opt/ai-gallery/.env`。
+- 前端 `/opt/ai-gallery/app`，数据 `/opt/ai-gallery/data`；systemd 限制只允许写 data，`ProtectHome=true`。未来若需读花园目录中的凭据，不能假定当前沙箱允许，应使用本服务自己的受控凭据位置。
+
+### 供应商配置与源码差异
+
+线上为 `AICompanyGallery/1.1`，`server.py` 1342 行、59144 字节，SHA256：
+
+```text
+596a945352228a42500956e0accebe350b6050ea0e16a658e97c302ca9884e31
+```
+
+它与本机 `/home/yotin/share/ai-gallery/server.py` 字节一致。核验时仓库 `deploy/ai_gallery_server.py` 为 1.0；下方第一阶段已在本地分支原样承接 1.1，尚未提交或发布。线上目录没有 `.git`；以后发布须按本地记录的 SHA 核对，不用旧副本覆盖。
+
+前端 index.html SHA256 为 `d25b22fc5cc1bc05d3949b86d5930ad2865c0fe08ac1c8709348cbb617ffc740`，引用 `assets/index-Cv7Fwl-r.js` 与 `assets/index-B74eP2fC.css`。这能定位现有产物，不证明其完整源码已与 Git 对齐。
+
+当前存在两处配置：
+
+| 文件 | 实际用途 | 核验权限 |
+| --- | --- | --- |
+| `/opt/ai-gallery/.env` | 启动参数及旧单供应商回退配置 | 600 root:root |
+| `/opt/ai-gallery/ai-providers.json` | 1.1 多供应商配置，按 mtime/size 热加载，schema=1 | 640 root:yotin |
+
+JSON 当前 `active_vendor_id=intelalloc`，`failover=true`；还有山海、aicodemirror、ark-seedream。各家配置 `max_retries=2`、`timeout_seconds=300`；前三家模型 `gpt-image-2.5-sunburst`，Seedream 为 `doubao-seedream-4-0-250828`。这是配置事实，不代表各家现时可用或实际产生过调用。`/api/runtime-config` 返回 Sunburst、`streamImages=true`、`streamPartialImages=3`。
+
+更换模型或服务商时，应先判断实际使用的 JSON 节点；后文仅修改 `.env` 的旧步骤不足以更改现行活动供应商。JSON、env 可能含密钥，不提交 Git，不放前端目录。
+
+当前代理对部分超时、5xx、无可用响应可能重新提交/切换；这与 Garden 的“结果未知不重发”规则不同。未来接入 Garden 后，只保留一处供应商调度，不能叠加两层重试。
+
+### 数据与备份边界
+
+SQLite 为 `/opt/ai-gallery/data/gallery.db`，存在 WAL/SHM；只读统计为 users=20、generations=581。图片 581 个/163812288 字节、参考图 1021 个/225687984 字节、缩略图 581 个/10396478 字节，均为本次快照。
+
+`/opt/ai-gallery/backups/` 有 8 份旧代码/配置/前端备份，包含 edits、providers、config、app、stream 前缀；本轮未发现这些备份完整覆盖当前数据库和媒体，也未发现专属图库备份 timer 或当前用户 cron。不能把旧补丁备份当作当前完整回退点。
+
+正式发布前需要另建一致性备份：server.py、完整 app（含旧资源）、systemd 单元、env、ai-providers.json、SQLite 在线 backup 和 images/references/thumbnails；核对恢复方法后再切换。数据库有 WAL 时，不单独复制 gallery.db 冒充一致性备份。尚未执行本轮发布备份或恢复演练。
+
+只读维护命令：
+
+```bash
+ssh yotin220
+systemctl --no-pager status ai-gallery.service
+systemctl --no-pager cat ai-gallery.service
+ss -ltnp '( sport = :5731 )'
+curl -fsS http://127.0.0.1:5731/api/health
+curl -fsS http://127.0.0.1:5731/api/runtime-config
+journalctl -u ai-gallery.service --since today --no-pager
+```
+
+日志可能含提示词或供应商返回内容，外发前脱敏。后续部署/重启仍需当轮明确授权。
+
+### 第一阶段：承接线上 1.1 本地基线（2026-11-09）
+
+本阶段只处理部署源码缺失，不升级上游前端、不接入 Garden、不更改 220 服务或真实数据。分支为 `chore/capture-live-baseline-20261109`，从 `main@bf8e8217e73a43ebd37b11655b3d65a01dcb3848` 创建；原有本手册的远程核验记录保留，变更尚未提交或推送。
+
+- 再次通过 `ssh -o BatchMode=yes yotin220 'sha256sum /opt/ai-gallery/server.py'` 核对本机 share 副本与线上一致，然后原样复制到 `deploy/ai_gallery_server.py`。三者 SHA256 均为上方 `596a9453…884e31`；承接文件为 1342 行、59144 字节，未格式化或修改业务行为。
+- 静态 AST 字符串扫描：完整 `sk-` 样式 Key、字面 Bearer token、PEM/OpenSSH 私钥各 0 项；没有复制线上 env 或供应商 JSON。该检查不是对所有可能凭据格式的完整审计。
+- `deploy/test_stream_proxy.py` 已适配 1.1 的供应商配置、入站解析和成品归一接口，移除对已删除 `replace_multipart_field` 的调用。所有测试使用临时配置和临时 SQLite/媒体目录；import 前隔离 `AI_GALLERY_*`，供应商为假 loopback HTTP 服务，重试设为 0、failover 关闭。URL 白名单及 socket connect/connect_ex 阻断非 loopback 出站，并有拒绝外网的反例断言；不请求真实供应商。
+- 本机运行 `python3 -m unittest discover -s deploy -p 'test_stream_proxy.py' -v`：8 项通过，含单/双图在 relay JSON 与 multipart 两种出站协议下的顺序保持、health/runtime、JSON/SSE 成品与结束前心跳、Responses 成品归一、401/非法输入、外网阻断，以及旧行和媒体的初始化保留。日志为 `/tmp/playground-baseline-python-20261109.log`；这些是假上游协议 smoke，不是实际出图或完整浏览器验收。
+- 承接前后 `init_storage` AST 相同：本阶段没有 SQLite schema 变更。临时库中预置用户/作品后再次初始化，逐字段及媒体字节保持不变。真实 SQLite、images/references/thumbnails、浏览器历史数据全部保留；不能因为上游没有公司数据库而删除。没有连接或初始化生产数据库，也没有清理任何真实数据。
+- 1.1 现有的结果未知重试/切换风险原样保留；通过基线测试不代表认可该策略。后续接统一 AI 服务时应移除 Playground 供应商重试/切换，只由 AI 服务管理生成尝试。
+
+下一阶段才升级固定上游版本并迁回公司身份、图库和受管配置；发布前另做完整数据备份与恢复验证，不把源码承接当作上线或数据迁移授权。
+
 ## 1. 系统信息
 
 | 项目 | 当前配置 |
@@ -17,8 +93,8 @@
 | 图片目录 | `/opt/ai-gallery/data/images` |
 | 缩略图目录 | `/opt/ai-gallery/data/thumbnails` |
 | 参考图目录 | `/opt/ai-gallery/data/references` |
-| 当前模型配置 | `/opt/ai-gallery/.env` 中的 `AI_GALLERY_MODEL` |
-| 当前模型（2026-09-04 核验） | `gpt-image-2`（以后以服务器配置为准） |
+| 当前模型配置 | 优先核对 `/opt/ai-gallery/ai-providers.json` 活动节点，`.env` 为旧回退配置 |
+| 当前模型（2026-11-09 核验） | `gpt-image-2.5-sunburst`（以后以服务器配置为准） |
 
 平台使用单进程 Python 服务和 SQLite 数据库，不依赖 Docker、Node.js、Nginx、Redis 或 PostgreSQL。
 
@@ -37,10 +113,11 @@
 真实生图 API
 ```
 
-真实上游地址、API Key 和模型 ID 只保存在：
+真实上游地址、API Key 和模型 ID 保存在以下服务端配置中：
 
 ```text
 /opt/ai-gallery/.env
+/opt/ai-gallery/ai-providers.json
 ```
 
 该文件权限应为 `600`，只有管理员可以读取。不要把它复制到前端目录、聊天记录、工单截图或代码仓库。
