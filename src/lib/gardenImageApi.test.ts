@@ -11,6 +11,15 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Garden 通用生图客户端', () => {
+  it('沿用公司图库身份，不要求 Garden 登录并在查询取图时持续携带身份', async () => {
+    const identity = { id: 'company-user', nickname: '花园同事', avatar: '🌷' }
+    vi.stubGlobal('localStorage', { getItem: () => JSON.stringify(identity) })
+    const fetch = vi.fn().mockResolvedValue(json({ job_id: 'job', status: 'running' }))
+    vi.stubGlobal('fetch', fetch)
+    await getJobStatus('job')
+    expect(JSON.parse(decodeURIComponent(fetch.mock.calls[0][1].headers['X-Company-Identity']))).toEqual(identity)
+  })
+
   it('没有 randomUUID 的 HTTP 环境仍能生成有效幂等键并提交', async () => {
     vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
     const fetch = vi.fn().mockResolvedValueOnce(json(caps)).mockResolvedValueOnce(json({ job_id: 'http-job' }, 202))

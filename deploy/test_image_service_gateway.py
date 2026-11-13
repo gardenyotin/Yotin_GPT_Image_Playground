@@ -4,6 +4,8 @@ import http.client
 import http.server
 import json
 import threading
+import tempfile
+import urllib.parse
 import unittest
 from unittest.mock import patch
 
@@ -27,7 +29,7 @@ class ImageServiceGatewayTests(unittest.TestCase):
         body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
         case.calls.append((self.command, self.path, dict(self.headers), body))
         status = 200
-        data = {'job_id': 'job-1', 'requested_by': 'alice', 'status': 'succeeded',
+        data = {'job_id': 'job-1', 'requested_by': 'company:alice', 'status': 'succeeded',
                 'params_json': {'n': 1}, 'result_assets_json': [{'index': 0, 'storage_key': 'private/key'}]}
         if self.path == '/api/identity':
           status = 401 if self.headers.get('Cookie') == 'anonymous' else 200
@@ -59,6 +61,12 @@ class ImageServiceGatewayTests(unittest.TestCase):
     self.config = patch.multiple(gallery, GARDEN_API_URL=url,
                                  AI_IMAGE_SERVICE_URL=url, AI_IMAGE_SERVICE_API_KEY='server-only-key')
     self.config.start()
+    self.data = tempfile.TemporaryDirectory()
+    self.db_config = patch.object(gallery, 'DB_PATH', self.data.name + '/gallery.db')
+    self.db_config.start()
+    with gallery.connect() as db:
+      db.execute('CREATE TABLE users (id TEXT, nickname TEXT, avatar TEXT)')
+      db.executemany('INSERT INTO users VALUES (?,?,?)', [('alice', 'alice', '🌷'), ('bob', 'bob', '🌷')])
     self.threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (self.upstream, self.gateway)]
     for t in self.threads:
       t.start()
@@ -68,11 +76,15 @@ class ImageServiceGatewayTests(unittest.TestCase):
       s.shutdown()
       s.server_close()
     self.config.stop()
+    self.db_config.stop()
+    self.data.cleanup()
 
   def request(self, path, body=None, cookie='alice', content_type='application/json'):
     with closing(http.client.HTTPConnection('127.0.0.1', self.gateway.server_port, timeout=3)) as c:
-      c.request('POST' if body is not None else 'GET', path, body,
-                {'Content-Type': content_type, 'Cookie': cookie, 'X-API-Key': 'browser-forged-key'})
+      headers = {'Content-Type': content_type, 'Cookie': cookie, 'X-API-Key': 'browser-forged-key'}
+      if cookie != 'anonymous':
+        headers['X-Company-Identity'] = urllib.parse.quote(json.dumps({'id': cookie, 'nickname': cookie, 'avatar': '🌷'}))
+      c.request('POST' if body is not None else 'GET', path, body, headers)
       r = c.getresponse()
       return r.status, r.getheader('Content-Type'), r.read()
 
@@ -100,7 +112,8 @@ class ImageServiceGatewayTests(unittest.TestCase):
     self.assertEqual(calls[0][1], '/v1/images/generations')
     self.assertEqual(calls[0][2]['Idempotency-Key'], 'action-1')
     payload = json.loads(calls[0][3])
-    self.assertEqual(payload['user_ref'], 'alice')
+    self.assertEqual(payload['user_ref'], 'company:alice')
+    self.assertFalse(any(c[1] == '/api/identity' for c in self.calls))
     self.assertEqual(payload['external_ref'], 'action-1')
     self.assertEqual(payload['size'], '1024x1024')
     self.assertNotIn('transparent_output', payload)
@@ -116,13 +129,17 @@ class ImageServiceGatewayTests(unittest.TestCase):
     call = self.calls[-1]
     self.assertEqual(call[1], '/v1/images/edits')
     fields, files = gallery.parse_multipart(call[2], call[3])
-    self.assertEqual(fields['user_ref'], 'alice')
+    self.assertEqual(fields['user_ref'], 'company:alice')
     self.assertEqual(files['image'][0]['data'], b'\x89PNG\x00\xff')
 
   def test_anonymous_submit_never_reaches_image_service(self):
     status, _, _ = self.request('/api/image-jobs', b'{}', cookie='anonymous')
     self.assertEqual(status, 401)
-    self.assertEqual([c[1] for c in self.calls], ['/api/identity'])
+    self.assertEqual(self.calls, [])
+
+  def test_unknown_company_identity_is_rejected_without_supplier_request(self):
+    self.assertEqual(self.request('/api/image-jobs', b'{}', cookie='unknown')[0], 401)
+    self.assertEqual(self.calls, [])
 
   def test_other_user_cannot_read_cancel_or_download_job(self):
     for path, body in [('/api/image-jobs/job-1', None), ('/api/image-jobs/job-1/cancel', b''), ('/api/image-jobs/job-1/results/0', None)]:

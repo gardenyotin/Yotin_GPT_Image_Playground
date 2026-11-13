@@ -1,6 +1,7 @@
 import type { ApiProfile } from '../types'
 import { base64ToBytes, blobToDataUrl } from './dataUrl'
 import { createUuid } from './uuid'
+import { getCompanyIdentity } from './companyGallery'
 import { readRuntimeEnv } from './runtimeEnv'
 import { createRequestTimeoutError, getApiErrorMessage, type CallApiOptions, type CallApiResult } from './imageApiShared'
 
@@ -39,11 +40,14 @@ export class GardenApiError extends Error {
 }
 
 async function gardenFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const identity = getCompanyIdentity()
   const response = await fetch(`${GARDEN_API_PREFIX}${path}`, {
     cache: 'no-store',
     credentials: 'include',
     ...init,
-    headers: { Accept: 'application/json', ...init.headers },
+    headers: { Accept: 'application/json',
+      ...(identity ? { 'X-Company-Identity': encodeURIComponent(JSON.stringify(identity)) } : {}),
+      ...init.headers },
   })
   if (!response.ok) throw new GardenApiError(await getApiErrorMessage(response), response.status)
   return response

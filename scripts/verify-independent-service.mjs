@@ -11,6 +11,7 @@ const require = createRequire(path.resolve(process.env.GARDEN_ROOT || '../Garden
 const { chromium, expect } = require('@playwright/test')
 const root = await mkdtemp('/tmp/playground-independent-browser-')
 const posts = []
+let companyId
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
 const upstream = createServer(async (req, res) => {
   const body = Buffer.concat(await Array.fromAsync(req))
@@ -30,9 +31,9 @@ const upstream = createServer(async (req, res) => {
     max_output_images_per_job: 4, supported_params: ['n', 'size', 'quality', 'output_format'] }] }))
   if (req.method === 'POST') {
     posts.push({ path: req.url, key: req.headers['idempotency-key'], payload: JSON.parse(body) })
-    assert.equal(posts.at(-1).payload.user_ref, 'browser-alice')
+    assert.equal(posts.at(-1).payload.user_ref, 'company:' + companyId)
   }
-  res.end(JSON.stringify({ job_id: 'browser-job', requested_by: 'browser-alice', status: req.method === 'POST' ? 'queued' : 'succeeded',
+  res.end(JSON.stringify({ job_id: 'browser-job', requested_by: 'company:' + companyId, status: req.method === 'POST' ? 'queued' : 'succeeded',
     params_json: { n: 1 }, result_assets_json: [{ index: 0, storage_key: 'private-output' }] }))
 })
 await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
@@ -52,10 +53,14 @@ try {
   await expect(async () => assert.equal((await fetch(base + '/api/health')).status, 200)).toPass({ timeout: 10000 })
   browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || '/home/yotin/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome' })
   const context = await browser.newContext()
-  await context.addInitScript(() => localStorage.setItem('ai-company-gallery-identity', JSON.stringify({ id: 'browser-test', nickname: '网关回归', avatar: '🌷' })))
   const page = await context.newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(e.message))
+  const registration = await context.request.post(base + '/api/users/resolve', { data: { nickname: '网关回归', avatar: '🌷' } })
+  const registered = await registration.json()
+  assert.equal(registration.status(), 201)
+  await context.addInitScript((id) => localStorage.setItem('ai-company-gallery-identity', JSON.stringify({ id, nickname: '网关回归', avatar: '🌷' })), registered.user.id)
+  companyId = registered.user.id
   await page.goto(base, { waitUntil: 'domcontentloaded' })
   await page.getByLabel('描述你想生成的图片，可输入 @ 来指定参考图...').fill('独立生图服务网关回归')
   await page.keyboard.press('Escape')

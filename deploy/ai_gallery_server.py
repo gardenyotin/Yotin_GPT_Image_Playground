@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """公司图库与生图客户端网关；生图执行由独立 AI 服务提供。
 
-本服务保留原公司图库数据库和媒体；登录沿用 Garden，生图请求转为独立服务 /v1 契约。
+本服务保留原公司图库数据库、昵称头像身份和媒体；生图请求转为独立服务 /v1 契约。
 可选文本代理只允许 Responses 文本/函数工具，禁止内置生图工具。
 """
 import base64
@@ -402,16 +402,17 @@ class Handler(SimpleHTTPRequestHandler):
           return self.send_json(503, {'detail': '独立生图服务暂无可用模型'})
         return self.send_json(200, {**rows[0], 'provider': models.get('provider') or 'ai_image_service'})
 
-      # 沿用Garden登录会话作用户归属；Cookie只送身份服务，绝不送独立AI服务。
-      if not GARDEN_API_URL:
-        return self.send_json(503, {'detail': '登录身份服务尚未配置'})
-      status, _, raw = self.upstream(GARDEN_API_URL, 'GET', '/api/identity',
-                                    {'Cookie': self.headers.get('Cookie', ''), 'Accept': 'application/json'})
-      if status != 200:
-        return self.send_json(status if status in (401, 403) else 502, {'detail': '请先登录 Garden' if status in (401, 403) else '登录身份服务暂不可达'})
-      user_id = json.loads(raw).get('user_id')
-      if not isinstance(user_id, str) or not user_id or len(user_id) > 64:
-        return self.send_json(502, {'detail': '登录身份无效'})
+      # 沿用公司图库既有昵称/头像识别合同，不把Garden登录引入独立站。
+      # 这不是私密账号认证：公司图库本身允许按昵称/头像选择已有身份。
+      identity = json.loads(urllib.parse.unquote(self.headers.get('X-Company-Identity', 'null')))
+      if not isinstance(identity, dict):
+        return self.send_json(401, {'detail': '请先设置公司图库昵称和头像'})
+      with connect() as db:
+        user = db.execute('SELECT id FROM users WHERE id=? AND nickname=? AND avatar=?',
+                          (identity.get('id'), identity.get('nickname'), identity.get('avatar'))).fetchone()
+      if not user:
+        return self.send_json(401, {'detail': '公司图库身份无效，请重新选择昵称和头像'})
+      user_id = 'company:' + user['id']
 
       if path == '/api/image-jobs' and self.command == 'POST':
         body = self.read_body()
