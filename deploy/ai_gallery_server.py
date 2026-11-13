@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""公司图库与 Garden 客户端网关；生图执行仅在 Garden。
+"""公司图库与生图客户端网关；生图执行由独立 AI 服务提供。
 
-本服务保留原公司图库数据库和媒体，转发通用任务及 Garden 登录态。
+本服务保留原公司图库数据库和媒体；登录沿用 Garden，生图请求转为独立服务 /v1 契约。
 可选文本代理只允许 Responses 文本/函数工具，禁止内置生图工具。
 """
 import base64
@@ -31,6 +31,8 @@ APP_DIR = Path(os.environ.get('AI_GALLERY_APP_DIR', '/opt/ai-gallery/app')).reso
 DATA_DIR = Path(os.environ.get('AI_GALLERY_DATA_DIR', '/opt/ai-gallery/data')).resolve()
 DB_PATH = DATA_DIR / 'gallery.db'
 GARDEN_API_URL = os.environ.get('GARDEN_API_URL', '').rstrip('/')
+AI_IMAGE_SERVICE_URL = os.environ.get('AI_IMAGE_SERVICE_URL', '').rstrip('/')
+AI_IMAGE_SERVICE_API_KEY = os.environ.get('AI_IMAGE_SERVICE_API_KEY', '')
 TEXT_API_URL = os.environ.get('AI_GALLERY_TEXT_API_URL', '').rstrip('/')
 TEXT_API_KEY = os.environ.get('AI_GALLERY_TEXT_API_KEY', '')
 HOST = os.environ.get('AI_GALLERY_HOST', '0.0.0.0')
@@ -358,11 +360,152 @@ class Handler(SimpleHTTPRequestHandler):
       shutil.copyfileobj(source, self.wfile)
 
   def handle_garden(self):
+    path = urllib.parse.urlsplit(self.path).path
+    if AI_IMAGE_SERVICE_URL and (path == '/api/image-capabilities' or path == '/api/image-jobs' or path.startswith('/api/image-jobs/')):
+      return self.handle_image_service(path)
     if not GARDEN_API_URL:
       return self.send_json(503, {'detail': '请配置 GARDEN_API_URL，生图任务只能由 Garden 执行'})
     body = self.read_body() if self.command == 'POST' else None
     headers = {name: self.headers[name] for name in ('Content-Type', 'Cookie', 'Accept') if self.headers.get(name)}
     self.forward_request(GARDEN_API_URL + self.path, body, headers)
+
+  def upstream(self, root, method, path, headers=None, body=None):
+    # 仅访问运维配置的服务根，不读取浏览器URL/Key，不跟随重定向或环境代理。
+    parsed = urllib.parse.urlsplit(root)
+    if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username
+        or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+      raise ClientInputError('服务地址必须是无凭据的 HTTP 根地址')
+    cls = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+    conn = cls(parsed.hostname, parsed.port, timeout=30)
+    try:
+      conn.request(method, path, body=body, headers=headers or {})
+      response = conn.getresponse()
+      data = response.read(MAX_BODY + 1)
+      if len(data) > MAX_BODY:
+        raise OSError('upstream response too large')
+      return response.status, response.getheader('Content-Type') or 'application/json', data
+    finally:
+      conn.close()
+
+  def handle_image_service(self, path):
+    if not AI_IMAGE_SERVICE_API_KEY:
+      return self.send_json(503, {'detail': '独立生图服务项目 Key 尚未配置'})
+    headers = {'X-API-Key': AI_IMAGE_SERVICE_API_KEY, 'Accept': 'application/json'}
+    try:
+      if path == '/api/image-capabilities' and self.command == 'GET':
+        status, _, raw = self.upstream(AI_IMAGE_SERVICE_URL, 'GET', '/v1/models', headers)
+        if status != 200:
+          return self.image_service_response(status, raw)
+        models = json.loads(raw)
+        rows = models.get('data') or []
+        if not rows:
+          return self.send_json(503, {'detail': '独立生图服务暂无可用模型'})
+        return self.send_json(200, {**rows[0], 'provider': models.get('provider') or 'ai_image_service'})
+
+      # 沿用Garden登录会话作用户归属；Cookie只送身份服务，绝不送独立AI服务。
+      if not GARDEN_API_URL:
+        return self.send_json(503, {'detail': '登录身份服务尚未配置'})
+      status, _, raw = self.upstream(GARDEN_API_URL, 'GET', '/api/identity',
+                                    {'Cookie': self.headers.get('Cookie', ''), 'Accept': 'application/json'})
+      if status != 200:
+        return self.send_json(status if status in (401, 403) else 502, {'detail': '请先登录 Garden' if status in (401, 403) else '登录身份服务暂不可达'})
+      user_id = json.loads(raw).get('user_id')
+      if not isinstance(user_id, str) or not user_id or len(user_id) > 64:
+        return self.send_json(502, {'detail': '登录身份无效'})
+
+      if path == '/api/image-jobs' and self.command == 'POST':
+        body = self.read_body()
+        ctype = self.headers.get('Content-Type', '')
+        if ctype.lower().startswith('multipart/form-data'):
+          fields, files = parse_multipart(self.headers, body)
+          params = json.loads(fields.get('params', '{}'))
+        elif ctype.lower().startswith('application/json'):
+          fields, files = json.loads(body), {}
+          params = fields.get('params') or {}
+        else:
+          return self.send_json(415, {'detail': '仅支持 JSON 或 multipart/form-data'})
+        if not isinstance(fields, dict) or not isinstance(params, dict):
+          raise ClientInputError('生图参数格式无效')
+        request_id = fields.get('client_request_id')
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 64:
+          raise ClientInputError('client_request_id 必须为1到64字符')
+        if fields.get('source_app') != 'playground':
+          raise ClientInputError('source_app 必须为 playground')
+        payload = {'prompt': fields.get('prompt'), 'external_ref': request_id, 'user_ref': user_id}
+        defaults = {'complexity': 'auto', 'moderation': 'auto', 'output_compression': None,
+                    'transparent_output': False, 'frame_count': 9, 'frame_duration_ms': 200}
+        for key, value in params.items():
+          if key in ('n', 'size', 'quality', 'output_format'):
+            payload[key] = value
+          elif key not in defaults or value not in (None, defaults[key]):
+            raise ClientInputError('当前生图服务不支持参数：' + key)
+        if any(name != 'image' for name in files):
+          raise ClientInputError('仅支持 image 文件字段')
+        headers['Idempotency-Key'] = request_id
+        if files.get('image'):
+          boundary = 'playground-' + uuid.uuid4().hex
+          chunks = []
+          for name, value in payload.items():
+            if value is not None:
+              chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+          for i, image in enumerate(files['image']):
+            mime = image['content_type']
+            if mime not in ('image/png', 'image/jpeg', 'image/webp'):
+              return self.send_json(415, {'detail': '参考图仅支持 PNG、JPEG、WebP'})
+            chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="input-{i}"\r\nContent-Type: {mime}\r\n\r\n'.encode() + image['data'] + b'\r\n')
+          chunks.append(f'--{boundary}--\r\n'.encode())
+          body = b''.join(chunks)
+          headers['Content-Type'] = 'multipart/form-data; boundary=' + boundary
+          target = '/v1/images/edits'
+        else:
+          headers['Content-Type'] = 'application/json'
+          body = json_bytes(payload)
+          target = '/v1/images/generations'
+        status, _, raw = self.upstream(AI_IMAGE_SERVICE_URL, 'POST', target, headers, body)
+        return self.image_service_response(status, raw)
+
+      match = re.fullmatch(r'/api/image-jobs/([a-zA-Z0-9_-]{1,128})(?:/(cancel|results/(\d+)))?', path)
+      if not match or (match[2] == 'cancel' and self.command != 'POST') or (match[2] != 'cancel' and self.command != 'GET'):
+        return self.send_json(404, {'detail': '任务接口不存在'})
+      target = '/v1/jobs/' + match[1]
+      status, _, raw = self.upstream(AI_IMAGE_SERVICE_URL, 'GET', target, headers)
+      if status != 200:
+        return self.image_service_response(status, raw)
+      job = json.loads(raw)
+      if job.get('requested_by') != user_id:
+        return self.send_json(404, {'detail': '任务不存在'})
+      if match[2] == 'cancel':
+        status, _, raw = self.upstream(AI_IMAGE_SERVICE_URL, 'POST', target + '/cancel', headers)
+        return self.image_service_response(status, raw)
+      if match[3] is not None:
+        status, mime, raw = self.upstream(AI_IMAGE_SERVICE_URL, 'GET', target + '/result?index=' + match[3], headers)
+        if status != 200:
+          return self.image_service_response(status, raw)
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+      return self.image_service_response(status, raw)
+    except (OSError, http.client.HTTPException):
+      return self.send_json(502, {'detail': '独立生图服务暂不可达；提交结果可能未知，请保留原任务，不要重复生成'})
+    except (ValueError, TypeError, AttributeError) as err:
+      return self.send_json(400, {'detail': str(err) if isinstance(err, ClientInputError) else '生图请求或服务响应格式无效'})
+
+  def image_service_response(self, status, raw):
+    data = json.loads(raw)
+    if not 200 <= status < 300:
+      error = data.get('error') or {}
+      return self.send_json(status if 400 <= status < 600 else 502,
+                            {'detail': error.get('message') or '独立生图服务请求失败'})
+    if 'job_id' in data and 'status' in data:
+      # 浏览器只接收任务视图，不暴露独立服务的存储路径、项目身份或供应商恢复标识。
+      data = {key: data.get(key) for key in ('job_id', 'status', 'params_json', 'error_code', 'error_message', 'provider_model')}
+      source = json.loads(raw)
+      data['result_assets_json'] = [{'index': item['index']} for item in source.get('result_assets_json') or []]
+    return self.send_json(status, data)
 
   def handle_proxy(self):
     # 旧的 images 路径明确退役，避免旧前端或 CLI 绕过 Garden。
