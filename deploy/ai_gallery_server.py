@@ -496,11 +496,17 @@ class Handler(SimpleHTTPRequestHandler):
       return self.send_json(400, {'detail': str(err) if isinstance(err, ClientInputError) else '生图请求或服务响应格式无效'})
 
   def image_service_response(self, status, raw):
-    data = json.loads(raw)
+    try:
+      data = json.loads(raw)
+      if not isinstance(data, dict):
+        raise ValueError('invalid upstream envelope')
+    except (ValueError, TypeError):
+      return self.send_json(status if 500 <= status < 600 else 502,
+                            {'detail': '独立生图服务返回异常响应；请保留原任务标识，不要重复生成'})
     if not 200 <= status < 300:
       error = data.get('error') or {}
       return self.send_json(status if 400 <= status < 600 else 502,
-                            {'detail': error.get('message') or '独立生图服务请求失败'})
+                            {'detail': (error.get('message') if isinstance(error, dict) else None) or '独立生图服务请求失败'})
     if 'job_id' in data and 'status' in data:
       # 浏览器只接收任务视图，不暴露独立服务的存储路径、项目身份或供应商恢复标识。
       data = {key: data.get(key) for key in ('job_id', 'status', 'params_json', 'error_code', 'error_message', 'provider_model')}

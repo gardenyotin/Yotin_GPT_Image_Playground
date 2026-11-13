@@ -28,6 +28,12 @@ class ImageServiceGatewayTests(unittest.TestCase):
       def handle_request(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
         case.calls.append((self.command, self.path, dict(self.headers), body))
+        if self.path.startswith('/v1/images/') and case.mode == 'plain_error':
+          self.send_response(500)
+          self.send_header('Content-Type', 'text/plain')
+          self.end_headers()
+          self.wfile.write(b'Internal Server Error')
+          return
         status = 200
         data = {'job_id': 'job-1', 'requested_by': 'company:alice', 'status': 'succeeded',
                 'params_json': {'n': 1}, 'result_assets_json': [{'index': 0, 'storage_key': 'private/key'}]}
@@ -157,6 +163,13 @@ class ImageServiceGatewayTests(unittest.TestCase):
     status, _, data = self.submit()
     self.assertEqual(status, 503)
     self.assertEqual(json.loads(data)['detail'], 'service unavailable')
+    self.assertEqual(len([c for c in self.calls if c[0] == 'POST']), 1)
+
+  def test_non_json_upstream_500_is_not_misreported_as_bad_client_input(self):
+    self.mode = 'plain_error'
+    status, _, data = self.submit()
+    self.assertEqual(status, 500)
+    self.assertIn('独立生图服务', json.loads(data)['detail'])
     self.assertEqual(len([c for c in self.calls if c[0] == 'POST']), 1)
 
   def test_unsupported_parameter_is_not_silently_dropped(self):
