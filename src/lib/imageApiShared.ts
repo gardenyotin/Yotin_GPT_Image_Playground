@@ -23,6 +23,7 @@ export function applyGptImage26Params(target: Record<string, unknown>, params: T
   }
 }
 
+export const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
 export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
 export const PROMPT_REWRITE_GUARD_PREFIX = 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:'
@@ -128,6 +129,12 @@ function assertMaxBytes(label: string, bytes: number, maxBytes: number) {
 
 export function assertImageInputPayloadSize(bytes: number) {
   assertMaxBytes('图像输入有效负载总大小', bytes, MAX_IMAGE_INPUT_PAYLOAD_BYTES)
+}
+
+export function assertReferenceImageSize(bytes: number) {
+  if (bytes > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new Error('单张参考图不能超过 10 MB，请压缩后再上传')
+  }
 }
 
 export function assertMaskEditFileSize(label: string, bytes: number) {

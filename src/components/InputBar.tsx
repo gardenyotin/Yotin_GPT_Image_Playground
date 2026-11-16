@@ -536,7 +536,7 @@ export default function InputBar() {
     { label: 'max', value: 'max', disabledReason: disabledReasons.extendedQuality },
   ]
   const atImageLimit = inputImages.length >= MAX_INPUT_IMAGES
-  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${MAX_INPUT_IMAGES} 张），无法继续添加` : '添加图片'
+  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${MAX_INPUT_IMAGES} 张），无法继续添加` : '添加图片（单张不超过 10 MB）'
   const transparentOutputHint = useHintTooltip()
   const handleTransparentOutputMenuOpenChange = useCallback((open: boolean) => {
     if (open) transparentOutputHint.hide()
@@ -869,7 +869,7 @@ export default function InputBar() {
       }
     } catch (err) {
       useStore.getState().showToast(
-        `图片添加失败：${err instanceof Error ? err.message : String(err)}`,
+        `图片添加失败，${err instanceof Error ? err.message : String(err)}`,
         'error',
       )
     }
@@ -1583,6 +1583,7 @@ export default function InputBar() {
 
       {showUploadMenu && (
         <div className={`absolute bottom-full ${mobile ? 'left-0' : 'right-0'} mb-2 w-32 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200`}>
+          <p className="px-3 py-2 text-xs text-gray-500">单张不超过 10 MB</p>
           {mobile && (
             <button
               className="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"

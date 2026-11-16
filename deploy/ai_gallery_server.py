@@ -38,6 +38,7 @@ TEXT_API_KEY = os.environ.get('AI_GALLERY_TEXT_API_KEY', '')
 HOST = os.environ.get('AI_GALLERY_HOST', '0.0.0.0')
 PORT = int(os.environ.get('AI_GALLERY_PORT', '5731'))
 MAX_BODY = 80 * 1024 * 1024
+MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 UPSTREAM_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
 
@@ -450,6 +451,8 @@ class Handler(SimpleHTTPRequestHandler):
             if value is not None:
               chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
           for i, image in enumerate(files['image']):
+            if len(image['data']) > MAX_REFERENCE_IMAGE_BYTES:
+              return self.send_json(413, {'detail': '单张参考图不能超过 10 MB，请压缩后再上传'})
             mime = image['content_type']
             if mime not in ('image/png', 'image/jpeg', 'image/webp'):
               return self.send_json(415, {'detail': '参考图仅支持 PNG、JPEG、WebP'})

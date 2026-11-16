@@ -3,7 +3,7 @@ import { base64ToBytes, blobToDataUrl } from './dataUrl'
 import { createUuid } from './uuid'
 import { getCompanyIdentity } from './companyGallery'
 import { readRuntimeEnv } from './runtimeEnv'
-import { createRequestTimeoutError, getApiErrorMessage, type CallApiOptions, type CallApiResult } from './imageApiShared'
+import { assertReferenceImageSize, createRequestTimeoutError, getApiErrorMessage, type CallApiOptions, type CallApiResult } from './imageApiShared'
 
 const GARDEN_API_PREFIX = (readRuntimeEnv(import.meta.env.VITE_GARDEN_API_PREFIX) || '/api').replace(/\/$/, '')
 const RUNNING_STATUSES = new Set(['queued', 'running', 'retry_wait'])
@@ -90,6 +90,7 @@ export async function submitJob(opts: CallApiOptions, signal?: AbortSignal): Pro
     const match = url.match(/^data:(image\/[\w.+-]+);base64,(.*)$/s)
     if (!match) throw new Error('参考图片必须为有效的图片 data URL')
     const bytes = base64ToBytes(match[2])
+    assertReferenceImageSize(bytes.byteLength)
     body.append('image', new Blob([new Uint8Array(bytes)], { type: match[1] }), `reference-${idx + 1}`)
   }
   const job = await (await gardenFetch('/image-jobs', { method: 'POST', body, signal })).json()

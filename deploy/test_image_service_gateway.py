@@ -138,6 +138,22 @@ class ImageServiceGatewayTests(unittest.TestCase):
     self.assertEqual(fields['user_ref'], 'company:alice')
     self.assertEqual(files['image'][0]['data'], b'\x89PNG\x00\xff')
 
+  def test_reference_limit_is_per_file_and_blocks_upstream(self):
+    for size, expected in [(6, 202), (7, 413)]:
+      with self.subTest(size=size), patch.object(gallery, 'MAX_REFERENCE_IMAGE_BYTES', 6):
+        self.calls.clear()
+        body = b''
+        for name, value in [('prompt', 'garden'), ('client_request_id', 'limit-test'), ('source_app', 'playground')]:
+          body += f'--b\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        for index in range(2):
+          body += f'--b\r\nContent-Disposition: form-data; name="image"; filename="{index}.png"\r\nContent-Type: image/png\r\n\r\n'.encode() + b'x' * size + b'\r\n'
+        body += b'--b--\r\n'
+        status, _, data = self.request('/api/image-jobs', body, content_type='multipart/form-data; boundary=b')
+        self.assertEqual(status, expected)
+        self.assertEqual(len([c for c in self.calls if c[0] == 'POST']), 1 if expected == 202 else 0)
+        if expected == 413:
+          self.assertIn('10 MB', json.loads(data)['detail'])
+
   def test_anonymous_submit_never_reaches_image_service(self):
     status, _, _ = self.request('/api/image-jobs', b'{}', cookie='anonymous')
     self.assertEqual(status, 401)

@@ -53,7 +53,7 @@ import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCa
 import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInputBuilder'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
-import { IMAGE_FETCH_CORS_HINT, isHttpUrl } from './lib/imageApiShared'
+import { assertReferenceImageSize, IMAGE_FETCH_CORS_HINT, isHttpUrl } from './lib/imageApiShared'
 import { cancelJob, getJobStatus, getJobResult, GardenApiError } from './lib/gardenImageApi'
 import { resolveCustomProviderModel } from './lib/imageProviderMappings'
 import { toApiInputImageDataUrl, validateMaskMatchesImage } from './lib/canvasImage'
@@ -4930,6 +4930,7 @@ export async function addImageFromFile(file: File): Promise<void> {
 
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
+  assertReferenceImageSize(file.size)
   // 图像接口不接受 SVG 和 GIF，加入时就转成 PNG
   const dataUrl = await toApiInputImageDataUrl(await fileToDataUrl(file))
   const id = await storeImage(dataUrl, 'upload')
@@ -4945,6 +4946,7 @@ export async function addImageFromUrl(src: string): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
+  assertReferenceImageSize(blob.size)
   // 图像接口不接受 SVG 和 GIF，加入时就转成 PNG
   const dataUrl = await toApiInputImageDataUrl(await blobToDataUrl(blob))
   const id = await storeImage(dataUrl, 'upload')

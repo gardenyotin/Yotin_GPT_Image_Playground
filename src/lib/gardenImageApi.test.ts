@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { assertReferenceImageSize, MAX_REFERENCE_IMAGE_BYTES } from './imageApiShared'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultGardenProfile, normalizeSettings } from './apiProfiles'
 import { callGardenImageApi, cancelJob, getJobStatus, submitJob } from './gardenImageApi'
@@ -111,4 +112,14 @@ it('轮询超时立即结束等待且保留已排队任务的 ID', async () => {
   } finally {
     vi.useRealTimers()
   }
+})
+
+it('参考图允许恰好10MB，超出时在提交前拒绝', async () => {
+  expect(() => assertReferenceImageSize(MAX_REFERENCE_IMAGE_BYTES)).not.toThrow()
+  expect(() => assertReferenceImageSize(MAX_REFERENCE_IMAGE_BYTES + 1)).toThrow('10 MB')
+  const fetch = vi.fn().mockResolvedValue(json(caps))
+  vi.stubGlobal('fetch', fetch)
+  const image = 'data:image/png;base64,' + btoa('x'.repeat(MAX_REFERENCE_IMAGE_BYTES + 1))
+  await expect(submitJob({ ...opts, inputImageDataUrls: [image] })).rejects.toThrow('10 MB')
+  expect(fetch).toHaveBeenCalledOnce()
 })
